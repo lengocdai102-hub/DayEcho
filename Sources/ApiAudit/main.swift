@@ -165,6 +165,61 @@ for (name, file) in typeNames {
     }
 }
 
+// 4b) 32 位 Int 常量溢出审计
+//
+// 真实踩过的坑：Apple Watch 设备是 arm64_32（32 位指针），
+// watchOS 上的 Int 是 32 位。写成
+//     maxTotalBytes: Int? = 8 * 1024 * 1024 * 1024   // 8 GiB
+// 在 macOS / iOS（64 位 Int）一切正常，
+// 只有 watchOS 设备构建才报
+//     error: arithmetic operation '8388608 * 1024' results in an overflow
+//
+// 本地 64 位机器复现不出来，所以做源码级静态扫描：
+// 找出所有字面量乘积超过 Int32.max 的常量表达式。
+func scan32BitOverflow() -> [String] {
+    var hits: [String] = []
+    for f in sources {
+        guard let content = try? String(contentsOf: URL(fileURLWithPath: f), encoding: .utf8) else { continue }
+        let lines = content.split(separator: "\n").map(String.init)
+        for (idx, raw) in lines.enumerated() {
+            let l = raw.trimmingCharacters(in: .whitespaces)
+            if l.hasPrefix("//") || l.hasPrefix("*") { continue }
+            guard l.contains("*") else { continue }
+            guard let eq = l.firstIndex(of: "=") else { continue }
+            let expr = String(l[l.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+            let cleaned = expr
+                .replacingOccurrences(of: "_", with: "")
+                .replacingOccurrences(of: "Int(", with: "")
+                .replacingOccurrences(of: ")", with: "")
+                .replacingOccurrences(of: ",", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            let parts = cleaned.split(separator: "*").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count >= 2 else { continue }
+            var allNumeric = true
+            var product = 1.0
+            for pt in parts {
+                guard let v = Double(pt) else { allNumeric = false; break }
+                product *= v
+            }
+            guard allNumeric else { continue }
+            if product > 2_147_483_647 {
+                hits.append("  " + (f as NSString).lastPathComponent + ":" + String(idx + 1) + ": " + expr)
+            }
+        }
+    }
+    return hits
+}
+
+let overflowHits = scan32BitOverflow()
+print("\n== 32 位 Int 常量溢出审计（watchOS arm64_32 风险）==")
+if overflowHits.isEmpty {
+    print("  OK 无风险常量")
+} else {
+    for h in overflowHits { print("  WARN " + h) }
+    print("  -> 计算结果超过 Int32.max (2147483647)")
+    print("  -> watchOS 设备是 arm64_32，Int 为 32 位，此处必然溢出")
+}
+
 // 5) 再测一遍：给 Codable 类型显式检查 public init(from:) 是否唯一
 //    通过 source 扫描找 public struct + Codable 但没有 "public init()" 的
 print("\n══ 源码扫描：Codable 且无显式 public init() 的 public 类型 ══")
@@ -224,10 +279,14 @@ if suspicious.isEmpty {
     for s in suspicious { print("  · \(s)") }
 }
 
-if suspicious.isEmpty && risky.isEmpty {
+if !overflowHits.isEmpty {
+    print("\n需要修复：把超 32 位的常量写成十进制字面量（如 8_589_934_592）")
+}
+
+if suspicious.isEmpty && risky.isEmpty && overflowHits.isEmpty {
     print("\n🎉 公开 API 跨模块审计全部通过")
     exit(0)
 } else {
-    print("\n需要修复上述类型：加显式 public init()")
+    print("\n需要修复上述问题")
     exit(1)
 }

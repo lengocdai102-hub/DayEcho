@@ -107,10 +107,12 @@ public struct RetentionPolicy: Codable, Hashable, Sendable {
 
     public init(
         keepDays: Int? = 30,
-        // ★ 必须显式写 Int(8)：8 * 1024 * 1024 * 1024 是纯字面量表达式，
-        // Swift 会按「能放下的最小位宽」推断类型，32 位下 8388608 * 1024 溢出。
-        // Debug 构建不报，Release 的 -O 常量折叠才报 —— 只有真机构建能暴露。
-        maxTotalBytes: Int? = Int(8) * 1024 * 1024 * 1024,
+        // ★ 直接写十进制字面量，不写 8 * 1024 * 1024 * 1024。
+        // 纯字面量乘法表达式会被 Swift 按「能放下的最小位宽」推断成 32 位，
+        // Release 的 -O 常量折叠时 8388608 * 1024 溢出。
+        // 写 Int(8) * 1024 * 1024 * 1024 也一样炸 —— 后面的 1024 仍是字面量。
+        // Debug 构建不做常量折叠，不报；只有 Release + 完整 SDK 才暴露。
+        maxTotalBytes: Int? = 8_589_934_592,  // 8 GiB
         deleteUnverifiedWhenOverLimit: Bool = false
     ) {
         self.keepDays = keepDays
