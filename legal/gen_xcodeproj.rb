@@ -168,13 +168,25 @@ watch_target.build_configurations.each do |cfg|
   s['WATCHOS_DEPLOYMENT_TARGET'] = WATCH_MIN
   s['TARGETED_DEVICE_FAMILY'] = '4'
   s['SUPPORTED_PLATFORMS'] = 'watchos watchsimulator'
-  s['SDKROOT'] = 'watchos'
+  # ★ SDKROOT 必须是 auto，不能硬写成 watchos ★
+  #
+  # 硬写成 watchos 时，watch target 的产物只落在 Build/Products/Release-watchos/，
+  # 而 iOS 宿主的 "Embed Watch Content" copy phase 从 iOS 侧的 products 目录
+  # 找不到 DayEchoWatch.app —— Xcode 会**静默跳过**这个 phase，
+  # 编译不报错，但产出的 .app 里根本没有 Watch/ 目录，
+  # 表现为「iOS 包里没找到嵌入的 DayEchoWatch.app」。
+  #
+  # 真实 Xcode 工程里 watch app target 用的是 SDKROOT = auto，
+  # 这样 Xcode 才能在 iOS 构建时正确产出并嵌入 watch 变体。
+  s['SDKROOT'] = 'auto'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
   # ★ 现代 SwiftUI watch App 的必需标记键
   s['INFOPLIST_KEY_WKApplication'] = 'YES'
   # 依附式手表 App：反向绑定到宿主 iOS App
   s['INFOPLIST_KEY_WKCompanionAppBundleIdentifier'] = BUNDLE_ID
+  # 依附式（不是独立手表 App）
+  s['INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp'] = 'NO'
   # ★ 绝不能设 WKWatchOnly=YES（那是独立手表 App 语义，与嵌入互斥）
   s.delete('INFOPLIST_KEY_WKWatchOnly')
   s['CODE_SIGNING_ALLOWED'] = 'NO'
