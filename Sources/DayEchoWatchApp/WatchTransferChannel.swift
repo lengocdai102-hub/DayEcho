@@ -60,6 +60,22 @@ public final class WatchTransferChannel: NSObject, SegmentTransport, @unchecked 
     /// ★ 关键：不能在 `transferFile` 返回时就认为成功 ★
     /// 必须等 `didFinish` 且 error 为 nil，才能让队列移除这一段。
     /// 提前判定成功 = 段被移出队列但手机其实没收到 = 数据丢失。
+    /// ★ 本传输通道**不自带**手机端校验确认 ★
+    ///
+    /// `WCSession.transferFile` 的 `didFinish` 只说明
+    /// **文件已交给系统传输队列**，不代表手机端收到、更不代表校验通过。
+    /// 手机端的验收结论要等**另一个方向**的 ACK 回来才知道。
+    ///
+    /// 所以这里返回 `false` ——
+    /// `send()` 成功只让段流转到 `.transferred`，
+    /// 必须等 `apply(acknowledgement:)` 收到手机端校验通过的 ACK
+    /// 才流转到 `.verified`，此时才允许从待传队列移除。
+    ///
+    /// ★ 这是「数据一个字节都不丢」的关键 ★
+    /// 如果这里错写成 `true`，段会在文件刚交给系统队列时就被标记成已验证，
+    /// 随后被保留策略清理掉 —— 手机端若最终没收到，这段录音就**永久消失**。
+    public var deliversAcknowledgement: Bool { false }
+
     public func send(_ payload: TransferPayload) async throws -> SegmentTransferResult {
         let fileURL = fileRoot.appendingPathComponent(payload.entry.fileName)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {

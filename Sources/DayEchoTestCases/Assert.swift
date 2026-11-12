@@ -9,18 +9,18 @@ import Foundation
 /// 否则 `print("\(error)")` 只会打印类型名（"AssertionFailure"），
 /// 断言的具体失败原因全部丢失 —— 排查时完全看不出是「期望 5 得到 0」
 /// 还是「文件不存在」。这个坑让本轮 9 个失败一度无法定位。
-final class AssertionFailure: Error, CustomStringConvertible {
-    let message: String
-    init(_ m: String) { message = m }
-    var description: String { message }
+public final class AssertionFailure: Error, CustomStringConvertible {
+    public let message: String
+    public init(_ m: String) { message = m }
+    public var description: String { message }
 }
 
-enum Suite {
-    nonisolated(unsafe) static var passed = 0
-    nonisolated(unsafe) static var failed: [String] = []
-    nonisolated(unsafe) static var currentCase = ""
+public enum Suite {
+    nonisolated(unsafe) public static var passed = 0
+    nonisolated(unsafe) public static var failed: [String] = []
+    nonisolated(unsafe) public static var currentCase = ""
 
-    static func case_(_ name: String, _ body: () throws -> Void) {
+    public static func case_(_ name: String, _ body: () throws -> Void) {
         currentCase = name
         do {
             try body()
@@ -33,7 +33,7 @@ enum Suite {
     }
 
     /// 异步版测试用例。传输相关测试必须用 async（await transfer）。
-    static func caseAsync(_ name: String, _ body: () async throws -> Void) async {
+    public static func caseAsync(_ name: String, _ body: () async throws -> Void) async {
         currentCase = name
         do {
             try await body()
@@ -45,53 +45,53 @@ enum Suite {
         }
     }
 
-    static func equal<V: Equatable>(_ a: V, _ b: V, _ label: String = "", file: String = #file, line: Int = #line) throws {
+    public static func equal<V: Equatable>(_ a: V, _ b: V, _ label: String = "", file: String = #file, line: Int = #line) throws {
         if a != b {
             throw AssertionFailure("\(label.isEmpty ? "" : label + " ")expected \(b), got \(a) (\(file):\(line))")
         }
     }
 
-    static func equalAccuracy(_ a: Double, _ b: Double, _ acc: Double = 0.0001, _ label: String = "") throws {
+    public static func equalAccuracy(_ a: Double, _ b: Double, _ acc: Double = 0.0001, _ label: String = "") throws {
         if abs(a - b) > acc {
             throw AssertionFailure("\(label.isEmpty ? "" : label + " ")expected \(b) ± \(acc), got \(a)")
         }
     }
 
-    static func isTrue(_ v: Bool, _ label: String = "") throws {
+    public static func isTrue(_ v: Bool, _ label: String = "") throws {
         if !v { throw AssertionFailure("\(label.isEmpty ? "" : label + " ")expected true, got false") }
     }
 
-    static func nilValue<V>(_ v: V?, _ label: String = "") throws {
+    public static func nilValue<V>(_ v: V?, _ label: String = "") throws {
         if v != nil { throw AssertionFailure("\(label.isEmpty ? "" : label + " ")expected nil, got \(String(describing: v!))") }
     }
 
 
-    static func isFalse(_ v: Bool, _ label: String = "") throws {
+    public static func isFalse(_ v: Bool, _ label: String = "") throws {
         if v { throw AssertionFailure("\(label.isEmpty ? "" : label + " ")expected false, got true") }
     }
 
-    static func notNil<V>(_ v: V?, _ label: String = "") throws {
+    public static func notNil<V>(_ v: V?, _ label: String = "") throws {
         if v == nil { throw AssertionFailure("\(label.isEmpty ? "" : label + " ")expected non-nil") }
     }
 }
 
 /// 便捷函数（与 XCTest 命名风格一致，方便迁移）。
-func checkEqual<V: Equatable>(_ a: V, _ b: V, _ label: String = "") throws {
+public func checkEqual<V: Equatable>(_ a: V, _ b: V, _ label: String = "") throws {
     try Suite.equal(a, b, label)
 }
-func checkTrue(_ v: Bool, _ label: String = "") throws {
+public func checkTrue(_ v: Bool, _ label: String = "") throws {
     try Suite.isTrue(v, label)
 }
-func checkNil<V>(_ v: V?, _ label: String = "") throws {
+public func checkNil<V>(_ v: V?, _ label: String = "") throws {
     try Suite.nilValue(v, label)
 }
-func checkFalse(_ v: Bool, _ label: String = "") throws {
+public func checkFalse(_ v: Bool, _ label: String = "") throws {
     try Suite.isFalse(v, label)
 }
-func checkNotNil<V>(_ v: V?, _ label: String = "") throws {
+public func checkNotNil<V>(_ v: V?, _ label: String = "") throws {
     try Suite.notNil(v, label)
 }
-func checkAccuracy(_ a: Double, _ b: Double, _ acc: Double = 0.0001, _ label: String = "") throws {
+public func checkAccuracy(_ a: Double, _ b: Double, _ acc: Double = 0.0001, _ label: String = "") throws {
     try Suite.equalAccuracy(a, b, acc, label)
 }
 
@@ -100,7 +100,7 @@ func checkAccuracy(_ a: Double, _ b: Double, _ acc: Double = 0.0001, _ label: St
 ///
 /// 比 `try!` 好：崩在 force-unwrap 上只会得到一个无信息的信号，
 /// 而这里能明确告诉你是哪个测试的哪一步取不到值。
-func unwrap<T>(_ value: T?, _ label: String = "") throws -> T {
+public func unwrap<T>(_ value: T?, _ label: String = "") throws -> T {
     guard let v = value else {
         throw AssertionFailure("\(label.isEmpty ? "" : label + " ")expected non-nil value, got nil")
     }
@@ -108,6 +108,6 @@ func unwrap<T>(_ value: T?, _ label: String = "") throws -> T {
 }
 
 /// `checkEqualAccuracy` 的别名（与 checkEqual 命名对齐）。
-func checkEqualAccuracy(_ a: Double, _ b: Double, _ acc: Double = 0.0001, _ label: String = "") throws {
+public func checkEqualAccuracy(_ a: Double, _ b: Double, _ acc: Double = 0.0001, _ label: String = "") throws {
     try Suite.equalAccuracy(a, b, acc, label)
 }

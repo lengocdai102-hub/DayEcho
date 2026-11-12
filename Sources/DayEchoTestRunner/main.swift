@@ -1,4 +1,5 @@
 import Foundation
+import DayEchoTestCases
 
 // 测试 runner 入口。放在 executableTarget 里，因为本机只有 CommandLineTools，没有完整 Xcode → 无 XCTest。
 print("══ DayEcho 核心逻辑测试 ══\n")

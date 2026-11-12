@@ -3,14 +3,14 @@ import DayEchoKit
 
 // MARK: - 工具
 
-func tempDir() -> URL {
+public func tempDir() -> URL {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("dayecho-test-\(UUID().uuidString)")
     try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }
 
-func sampleAudio(_ seed: Int, bytes: Int = 4096) -> Data {
+public func sampleAudio(_ seed: Int, bytes: Int = 4096) -> Data {
     // 伪随机但确定性的字节流，避免压缩/稀疏文件带来的误判
     var data = Data(count: bytes)
     var x = UInt64(seed &* 2654435761 &+ 12345)
@@ -23,7 +23,7 @@ func sampleAudio(_ seed: Int, bytes: Int = 4096) -> Data {
 
 // MARK: - 存储测试
 
-func storeTests() throws {
+public func storeTests() throws {
     let root = tempDir()
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try RecordingStore(root: root)
@@ -111,7 +111,7 @@ func storeTests() throws {
 
 // MARK: - 传输队列测试
 
-func transferQueueTests() throws {
+public func transferQueueTests() throws {
     try Suite.case_("失败条目不丢失，等重试") {
         let q = PendingTransferQueue()
         let e = PendingTransferQueue.Entry(
@@ -208,7 +208,7 @@ func transferQueueTests() throws {
 
 // MARK: - 校验测试
 
-func verifierTests() throws {
+public func verifierTests() throws {
     try Suite.case_("正常数据校验通过") {
         let data = sampleAudio(5)
         let sha = Digest.sha256(of: data)
@@ -239,7 +239,7 @@ func verifierTests() throws {
 
 // MARK: - 保留策略测试
 
-func retentionTests() throws {
+public func retentionTests() throws {
     try Suite.case_("超过保留期的已校验段被清理") {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }

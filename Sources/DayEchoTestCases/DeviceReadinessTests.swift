@@ -19,7 +19,7 @@ import DayEchoKit
 // MARK: - 假传输通道
 
 /// 可编程的假传输通道，用来模拟真实 WCSession 的各种行为。
-final class FakeTransport: SegmentTransport, @unchecked Sendable {
+public final class FakeTransport: SegmentTransport, @unchecked Sendable {
     /// 模拟传输行为
     enum Behavior {
         /// 正常送达并校验通过
@@ -40,11 +40,11 @@ final class FakeTransport: SegmentTransport, @unchecked Sendable {
     /// 已发送的段
     private(set) var sent: [TransferPayload] = []
     /// ★ 假通道直接扮演手机端 —— 成功即代表已确认 ★
-    var deliversAcknowledgement: Bool { true }
+    public var deliversAcknowledgement: Bool { true }
     /// 每次调用后行为可能改变（配合 failThenSucceed）
     var onSend: ((Int) -> Void)?
 
-    func send(_ payload: TransferPayload) async throws -> SegmentTransferResult {
+    public func send(_ payload: TransferPayload) async throws -> SegmentTransferResult {
         sent.append(payload)
         let idx = sent.count - 1
         onSend?(idx)
@@ -75,7 +75,7 @@ final class FakeTransport: SegmentTransport, @unchecked Sendable {
 
 // MARK: - A. 分段时钟
 
-func segmentClockTests() throws {
+public func segmentClockTests() throws {
     print("  [A] 分段时钟")
 
     try Suite.case_("A1 段起点独立记录，不重叠不漂移") {
@@ -182,7 +182,7 @@ func segmentClockTests() throws {
 
 // MARK: - B. 保留策略与未传输段
 
-func retentionSafetyTests() throws {
+public func retentionSafetyTests() throws {
     print("  [B] 未传输段的生命周期")
 
     try Suite.case_("B1 新写入的段默认是 pending 而非 verified") {
@@ -256,7 +256,7 @@ func retentionSafetyTests() throws {
 
 // MARK: - C. 传输中断恢复
 
-func transferRecoveryTests() async throws {
+public func transferRecoveryTests() async throws {
     print("  [C] 传输中断恢复（Auday 式卡死的解药）")
 
     try await Suite.caseAsync("C1 冷启动时遗留的 inFlight 被自动重置为 pending") {
@@ -319,7 +319,7 @@ func transferRecoveryTests() async throws {
 
 // MARK: - D. 端到端传输
 
-func endToEndTransferTests() async throws {
+public func endToEndTransferTests() async throws {
     print("  [D] 端到端传输（损坏/截断/拒收 → 保留 → 重试成功）")
 
     try await Suite.caseAsync("D1 正常传输：校验通过才移除") {
@@ -462,7 +462,7 @@ func endToEndTransferTests() async throws {
 
 // MARK: - E. Watch 崩溃/重启模拟
 
-func crashRestartTests() async throws {
+public func crashRestartTests() async throws {
     print("  [E] Watch 崩溃/重启模拟")
 
     try await Suite.caseAsync("E1 重启后已封段的段仍在库里") {
@@ -562,7 +562,7 @@ func crashRestartTests() async throws {
 
 // MARK: - F. 完整链路
 
-func fullChainTests() async throws {
+public func fullChainTests() async throws {
     print("  [F] 完整链路（录音 → 分段 → 传输 → 落盘 → 体检）")
 
     try await Suite.caseAsync("F1 连续录音 5 段全部完整送达手机") {
@@ -647,7 +647,7 @@ func fullChainTests() async throws {
 }
 
 /// 把 FakeTransport 的结果接到一段自定义逻辑上（模拟手机端落盘）。
-final class BridgeTransport: SegmentTransport, @unchecked Sendable {
+public final class BridgeTransport: SegmentTransport, @unchecked Sendable {
     private let receiver: FakeTransport
     private let handler: (TransferPayload) -> SegmentTransferResult
 
@@ -657,9 +657,9 @@ final class BridgeTransport: SegmentTransport, @unchecked Sendable {
     }
 
     /// 桥接通道同样扮演手机端角色 —— 成功即代表已确认
-    var deliversAcknowledgement: Bool { true }
+    public var deliversAcknowledgement: Bool { true }
 
-    func send(_ payload: TransferPayload) async throws -> SegmentTransferResult {
+    public func send(_ payload: TransferPayload) async throws -> SegmentTransferResult {
         _ = try await receiver.send(payload)   // 走一遍假通道（记录 sent）
         return handler(payload)
     }

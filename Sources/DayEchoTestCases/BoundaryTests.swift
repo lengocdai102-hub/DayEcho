@@ -20,7 +20,7 @@ import DayEchoKit
 
 // MARK: - G1：时间戳连续性
 
-func segmentTimestampContinuityTests() throws {
+public func segmentTimestampContinuityTests() throws {
     print("  [G1] 分段时间戳连续性")
 
     // G1-1 连续切段：每段的起点 = 自己被切出来的那一刻，不重叠不漂移
@@ -147,7 +147,7 @@ func segmentTimestampContinuityTests() throws {
 
 // MARK: - G2：初始状态 + 保留策略
 
-func initialStateAndRetentionTests() throws {
+public func initialStateAndRetentionTests() throws {
     print("  [G2] 落盘默认态与保留策略")
 
     // G2-1 落盘默认态必须是 .pending
@@ -247,7 +247,7 @@ func initialStateAndRetentionTests() throws {
 
 // MARK: - G3：冷启动恢复 .inFlight
 
-func coldStartRecoveryTests() throws {
+public func coldStartRecoveryTests() throws {
     print("  [G3] 冷启动恢复 .inFlight")
 
     // G3-1 冷启动：残留的 .inFlight 全部打回 .pending
@@ -329,7 +329,7 @@ func coldStartRecoveryTests() throws {
 
 // MARK: - G4：尾段封存 + 重入锁
 
-func tailSealAndReentrancyTests() throws {
+public func tailSealAndReentrancyTests() throws {
     print("  [G4] 尾段封存与重入锁")
 
     // G4-1 手动 stop() 必须封存尾段
