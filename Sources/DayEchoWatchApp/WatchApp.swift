@@ -41,7 +41,10 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     private var queueURL: URL { watchRoot.appendingPathComponent("pending-queue.json") }
 
-    init() {
+    // NSObject 已有 init()，这里覆盖它 → 必须写 override。
+    // SwiftPM 里这个文件不在任何 target 中，编译不到，
+    // 只有真 xcodebuild 才会暴露。
+    override init() {
         super.init()
         loadQueue()
     }

@@ -51,6 +51,13 @@ jobs:
       - name: Check localization keys
         run: swift run L10nCheck
 
+      # ---- 2b. Swift 语法检查（本地就能跑的廉价网）----
+      # iOS/watchOS App 的代码不在 SwiftPM target 里，本地编不了。
+      # -parse 只做语法分析，能挡住括号不配对之类的低级错误。
+      # 类型级检查由下面的 xcodebuild 负责。
+      - name: Check Swift syntax
+        run: swift run SyntaxCheck
+
       # ---- 3. 生成 Xcode 工程 ----
       # 工程是脚本生成的（不提交 .xcodeproj），保证配置永远可复现。
       - name: Generate Xcode project
@@ -75,6 +82,22 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      # ---- 4b. 单独 typecheck watchOS Extension ----
+      # 先单独查一遍，错误和 iOS 构建的错误分开报，定位更快。
+      - name: Typecheck watchOS extension
+        run: |
+          xcodebuild \
+            -project DayEcho.xcodeproj \
+            -scheme DayEchoWatch \
+            -destination 'generic/platform=watchOS Simulator' \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/DerivedDataWatchTypecheck" \
+            CODE_SIGNING_ALLOWED=NO \
+            build-for-testing \
+            -quiet || {
+              echo "::error::watchOS Extension 类型检查未通过（详见上方日志）"; exit 1;
+            }
 
       # ---- 5. 编译 watchOS App（模拟器架构）----
       # 用独立的 watchOS scheme：watchOS 的 API 限制和 iOS 不同，
