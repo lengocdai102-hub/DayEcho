@@ -245,9 +245,11 @@ final class WatchRecorder: NSObject, ObservableObject {
         // 撞车时只有一方真正执行封存 —— 另一方直接返回，
         // 绝不能让同一段在库里出现两条记录。
         guard sealer.sealCurrentSegment(reason: .timer) else {
-            // 已被 stop() 封过了 —— 这里不做任何封存，
-            // 但要让「当前段」状态复位，否则后续段也封不掉。
-            sealer.beginNextSegment()
+            // ★ 会话已结束（stop() 已封存尾段）—— 这里什么都不做。★
+            //
+            // 走到这里说明 stop() 已经先执行完了：
+            // recorder 已被置 nil、isRecording 已为 false，
+            // 所以这段音频不可能被封存两次。
             return
         }
 

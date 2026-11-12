@@ -185,7 +185,7 @@ func segmentClockTests() throws {
 func retentionSafetyTests() throws {
     print("  [B] 未传输段的生命周期")
 
-    try Suite.case_("B1 新写入的段默认是 recorded 而非 verified") {
+    try Suite.case_("B1 新写入的段默认是 pending 而非 verified") {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try RecordingStore(root: root)

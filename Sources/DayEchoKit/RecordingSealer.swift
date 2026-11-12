@@ -95,7 +95,14 @@ public final class RecordingSealer: @unchecked Sendable {
         sessionEnded = true
 
         if currentSealed {
-            // 定时器刚刚封过一段 —— 尾段已经被它顺带处理了
+            // ★ 当前正在录的这一段已经被封存了（通常是定时器刚切过段）★
+            // 这时**不存在额外的尾段** —— 用户停止时正在录的这段，
+            // 就是刚被封掉的那段，不需要再封一次。
+            //
+            // ★ 不会漏封的保证 ★
+            // WatchRecorder 是 @MainActor，tick() 与 stop() 串行执行，
+            // stop() 不可能插进 finalizeSegment() 中间；
+            // 且定时器封完会立刻 beginNextSegment() 复位标记。
             lastReason = .tail
             return false
         }

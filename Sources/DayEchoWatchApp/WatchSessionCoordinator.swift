@@ -172,9 +172,20 @@ extension WatchSessionCoordinator: WCSessionDelegate {
         }
     }
 
-    // watchOS 端必需
-    nonisolated func sessionDidBecomeInactive(_ session: WCSession) {}
-    nonisolated func sessionDidDeactivate(_ session: WCSession) {
-        Task { @MainActor in self.activateSession() }
-    }
+    // ★ watchOS 上不实现 sessionDidBecomeInactive / sessionDidDeactivate ★
+    //
+    // 这两个方法是 **iOS 专属**的：Apple 在 watchOS SDK 里把它们标为
+    // `@available(iOS, unavailable)`，写成 override 会直接编译失败：
+    //
+    //   error: cannot override 'sessionDidBecomeInactive' which has been marked unavailable
+    //
+    // ★ 为什么 watchOS 不需要它们 ★
+    // iOS 上这两个回调用来处理「手表侧会话失活/停用」，
+    // 属于 iPhone → Watch 的方向。
+    // 而 DayEcho 的传输方向是 **Watch → iPhone**（手表录音传到手机），
+    // 手表这一侧不会因为 iPhone 锁屏而失活 ——
+    // 所以这两个回调在 watchOS 上没有任何语义，也不需要实现。
+    //
+    // watchOS 上真正需要的回调是 session(_:activationDidCompleteWith:error:)，
+    // 已经在上面实现了。
 }

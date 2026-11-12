@@ -56,12 +56,28 @@ kit_target.build_configurations.each do |cfg|
 end
 
 # Kit 源码
-kit_files = %w[
-  Sources/DayEchoKit/Models.swift
-  Sources/DayEchoKit/RecordingStore.swift
-  Sources/DayEchoKit/Transfer.swift
-  Sources/DayEchoKit/SegmentClock.swift
-]
+#
+# ★ 用 glob 自动收集，不要手写枚举 ★
+#
+# 手写枚举时踩过的坑：新增了 RecordingSealer.swift / SegmentClock.swift /
+# TransferCoordinator.swift / Acknowledgement.swift 四个文件，
+# 但忘记把它们加进这个列表 ⇒
+#   - SwiftPM 全绿（SwiftPM 自己会 glob）
+#   - Xcode 工程里 DayEchoKit framework **缺这几个文件**
+#   - 编译 watchOS app 时报 `cannot find type 'RecordingSealer' in scope`
+#
+# ★ 为什么 SwiftPM 全绿掩盖了这个问题 ★
+# SwiftPM 编译 DayEchoKit 时会 glob 全部源文件，所以本机 `swift build` 和
+# CI 的 `swift run DayEchoTestRunner` 都是绿的；
+# 但 Xcode 工程是独立生成的，它用的是上面这份**手写清单**。
+# 两套构建系统的源文件列表不一致 ⇒ 只有真机编译阶段才炸。
+#
+# 改成 glob 之后，新增文件自动进两个 Kit target（iOS + watchOS），
+# 不会再出现这种「本机绿、CI 红」的错配。
+kit_files = Dir.glob(File.join(ROOT, 'Sources/DayEchoKit/**/*.swift'))
+             .map { |p| p.sub("#{ROOT}/", '') }
+             .sort
+raise '★ DayEchoKit 源文件为空 —— glob 失败？' if kit_files.empty?
 kit_group = project.new_group('DayEchoKit', 'Sources/DayEchoKit')
 kit_files.each do |f|
   path = File.join(ROOT, f)
