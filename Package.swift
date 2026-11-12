@@ -11,7 +11,8 @@ let package = Package(
         .library(name: "DayEchoKit", targets: ["DayEchoKit"]),
         .executable(name: "DayEchoCLI", targets: ["DayEchoCLI"]),
         .executable(name: "DayEchoTestRunner", targets: ["DayEchoTestRunner"]),
-        .executable(name: "SyntaxCheck", targets: ["SyntaxCheck"])
+        .executable(name: "SyntaxCheck", targets: ["SyntaxCheck"]),
+        .executable(name: "ApiAudit", targets: ["ApiAudit"])
     ],
     targets: [
         .target(
@@ -38,6 +39,11 @@ let package = Package(
                 .copy("../DayEchoApp/Resources"),
                 .copy("../DayEchoWatchApp/WatchResources"),
             ],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .executableTarget(
+            name: "ApiAudit",
+            path: "Sources/ApiAudit",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(

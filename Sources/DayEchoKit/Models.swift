@@ -124,6 +124,14 @@ public struct RetentionPolicy: Codable, Hashable, Sendable {
 /// Auday 官方 FAQ 明说档案不进 iCloud 也不进设备备份、换手机即永久丢失；
 /// DayEcho 主动做体检并把导出物放进用户自己的备份范围。
 public struct IntegrityReport: Codable, Hashable, Sendable {
+    // ★ 显式 public init()
+    // public struct 的 memberwise init 默认是 internal，跨模块不可见；
+    // 而 Codable 合成的 init(from:) 是 public —— 于是外部模块调用
+    // IntegrityReport() 会报 "missing argument for parameter 'from'"。
+    // 在 SwiftPM 内部测试时看不出来（同一模块可见 internal init），
+    // 只有当 App 作为框架消费者编译时才暴露。
+    public init() {}
+
     public var checkedSegments: Int = 0
     public var missingFiles: [String] = []
     public var hashMismatches: [String] = []

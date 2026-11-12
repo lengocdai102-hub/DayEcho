@@ -51,6 +51,14 @@ jobs:
       - name: Check localization keys
         run: swift run L10nCheck
 
+      # ---- 2a. 公开 API 跨模块审计 ----
+      # 抓「public struct + Codable 但没写 public init()」这类问题：
+      # memberwise init 默认 internal，跨模块不可见，外部调用会报
+      # "missing argument for parameter 'from'"。
+      # SwiftPM 内部测试时完全正常，只有 App 作为框架消费者编译时才炸。
+      - name: Audit public API cross-module visibility
+        run: swift run ApiAudit
+
       # ---- 2b. Swift 语法检查（本地就能跑的廉价网）----
       # iOS/watchOS App 的代码不在 SwiftPM target 里，本地编不了。
       # -parse 只做语法分析，能挡住括号不配对之类的低级错误。
