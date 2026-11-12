@@ -15,6 +15,24 @@ try verifierTests()
 print("\n[保留策略与导出]")
 try retentionTests()
 
+print("\n[上机前验证套件]")
+try segmentClockTests()
+try retentionSafetyTests()
+try await transferRecoveryTests()
+try await endToEndTransferTests()
+try await crashRestartTests()
+try await fullChainTests()
+
+// ★ 四组核心数据完整性边界单测 ★
+// 对应 4 个核心 Bug：时间戳计算 / 初始状态 / .inFlight 死锁恢复 / stop() 尾段封存。
+// 全部纯 Swift，不碰 watchOS API ⇒ 在 Mac 上就能拦住这些 bug，
+// 不必等真机长测才发现。
+print("\n[四组核心数据完整性边界]")
+try segmentTimestampContinuityTests()
+try initialStateAndRetentionTests()
+try coldStartRecoveryTests()
+try tailSealAndReentrancyTests()
+
 print("\n─────────────────────────────")
 print("通过 \(Suite.passed) / 失败 \(Suite.failed.count)")
 if !Suite.failed.isEmpty {

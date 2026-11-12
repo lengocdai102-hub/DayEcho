@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import WatchKit
+import WatchConnectivity
 import AVFoundation
 import DayEchoKit
 
@@ -15,6 +16,12 @@ import DayEchoKit
 /// - 手表意外重启/没电，已封的段还在。
 @MainActor
 final class WatchRecorder: NSObject, ObservableObject {
+    /// 全局单例。
+    /// ★ 必须是单例 ★
+    /// WCSessionDelegate 的回调发生在任意时刻，如果没有一个全局可达的实例，
+    /// 回调就找不到该把结果交给谁 —— 传输就会一直挂着直到超时。
+    static let shared = WatchRecorder()
+
     @Published var isRecording = false
     @Published var elapsed: TimeInterval = 0
     @Published var pendingCount = 0
@@ -30,6 +37,19 @@ final class WatchRecorder: NSObject, ObservableObject {
     private var startedAt = Date()
     private var store: RecordingStore?
     private var queue = PendingTransferQueue()
+
+    // ★ 分段时钟 ★
+    // 原先的起止时间是在 finalizeSegment 里手算的（`startedAt + elapsed - segmentSeconds`），
+    // 那个算法让**每一段的时间戳都挤在同一处**，iPhone 上时间线全乱。
+    // 现在交给 Kit 里的 SegmentClock：段的起点 = 上一段的终点，天然不重叠不漂移。
+    private var clock = SegmentClock(sessionStart: Date())
+
+    // ★ 传输通道与协调器 ★
+    private var transferChannel: WatchTransferChannel?
+    private var coordinator: TransferCoordinator?
+
+    /// 传输轮次间隔（秒）
+    private let transferInterval: TimeInterval = 20
 
     // MARK: 存储位置
 
@@ -47,9 +67,37 @@ final class WatchRecorder: NSObject, ObservableObject {
     override init() {
         super.init()
         loadQueue()
+
+        // 传输通道：必须被**长期强引用**。
+        // 如果这里只在需要传的时候临时创建、传完就释放，
+        // WCSession 的回调就找不到对应对象，传输永远完不成
+        // —— 表现就是「录音一直卡在待同步」。
+        let channel = WatchTransferChannel(fileRoot: watchRoot)
+        transferChannel = channel
+
+        let coord = TransferCoordinator(queue: queue, transport: channel) { [weak self] entry in
+            guard let self else { return nil }
+            let url = self.watchRoot.appendingPathComponent(entry.fileName)
+            return try? Data(contentsOf: url)
+        }
+        coordinator = coord
+
+        // ★ 恢复上次进程遗留的 inFlight 条目 ★
+        // 传输途中 App 被杀 / 手表重启时，那几段的状态会停在 inFlight，
+        // 不恢复就永远不会重传 —— 这正是 Auday「卡在待同步，删 App 重装」的死穴。
+        let recovered = coord.recoverInterrupted()
+        if recovered > 0 {
+            pendingCount = queue.pendingCount
+        }
     }
 
     // MARK: 录音控制
+
+    /// ★ 封存状态机 —— 「封存当前段」的唯一入口 ★
+    ///
+    /// 定时器切段和用户手动 stop() 都必须先问它「现在轮得到你封吗」，
+    /// 否则同一段可能被封两次（Bug #4 的双封存风险）。
+    private var sealer = RecordingSealer()
 
     func start() {
         guard !isRecording else { return }
@@ -59,6 +107,13 @@ final class WatchRecorder: NSObject, ObservableObject {
             sequence = 0
             startedAt = Date()
             elapsed = 0
+            // ★ 每场会话一个新的封存状态机 ★
+            // 它是「本场会话内，当前段是否已封存」的唯一裁判。
+            sealer = RecordingSealer()
+            // ★ 重置分段时钟 ★
+            // 不重置的话，上一场会话的段数会渗进这一场，导致序号跳号。
+            clock = SegmentClock(sessionStart: startedAt,
+                                 segmentDuration: TimeInterval(segmentSeconds))
 
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .default, options: [.allowBluetooth])
@@ -90,13 +145,68 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     func stop() {
         guard isRecording else { return }
+        // ★ 先取录音器的时长和文件 URL，再停 —— 尾段要封存 ★
+        // 顺序很重要：recorder 一旦置 nil，url 就拿不到了。
+        let recorded = recorder?.currentTime ?? 0
+        let fileURL = recorder?.url
         recorder?.stop()
         recorder = nil
         isRecording = false
         stopTimer()
+
+        // ★ 封存尾段 ★
+        // 原实现里 stop() 只停录音器，**最后一段音频从来没被封存过** ——
+        // 每次停止录音，最后一段（可能几十秒）直接丢失。
+        // 现在用 clock.finalizePartial 把尾段补上（过短的尾巴自动丢弃）。
+        //
+        // ★ 先问 sealer ★
+        // 如果定时器刚刚封过一段（比如 tick() 正好在 stop() 前一刻切了段），
+        // 这里就**不能**再封一次 —— 否则同一段在库里会有两条记录。
+        // 但如果定时器还没封，就由这里补封，尾段绝不丢。
+        if recorded > 0, let fileURL {
+            if sealer.endSessionAndSealTail() {
+                finalizeTailSegment(fileURL: fileURL, recordedDuration: recorded)
+            }
+        } else {
+            // 连尾段都不够长，也要把会话标记为已结束，
+            // 否则之后的定时器回调会以为会话还在继续。
+            _ = sealer.endSessionAndSealTail()
+        }
+
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         saveQueue()
     }
+
+    /// 封存最后一段（不足一个完整段的部分）。
+    private func finalizeTailSegment(fileURL: URL, recordedDuration: TimeInterval) {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+
+        let data = (try? Data(contentsOf: fileURL)) ?? Data()
+        guard !data.isEmpty else { return }
+
+        guard let window = clock.finalizePartial(recordedDuration: recordedDuration) else { return }
+
+        let checksum = Digest.sha256(of: data)
+        if let store {
+            _ = try? store.addSegment(
+                sessionID: sessionID, data: data,
+                startedAt: window.startedAt, endedAt: window.endedAt,
+                sequence: window.sequence
+            )
+        }
+        queue.enqueue(PendingTransferQueue.Entry(
+            sessionID: sessionID,
+            fileName: fileURL.lastPathComponent,
+            byteCount: data.count,
+            sha256: checksum,
+            sequence: window.sequence,
+            startedAt: window.startedAt,
+            endedAt: window.endedAt
+        ))
+        saveQueue()
+        pendingCount = queue.pendingCount
+    }
+
 
     /// 打一个标记点。当前段封段后带上这个标记。
     func markMoment() {
@@ -131,6 +241,16 @@ final class WatchRecorder: NSObject, ObservableObject {
     }
 
     private func finalizeSegment() {
+        // ★ 先问 sealer：这一段是否已经被 stop() 封过了？★
+        // 撞车时只有一方真正执行封存 —— 另一方直接返回，
+        // 绝不能让同一段在库里出现两条记录。
+        guard sealer.sealCurrentSegment(reason: .timer) else {
+            // 已被 stop() 封过了 —— 这里不做任何封存，
+            // 但要让「当前段」状态复位，否则后续段也封不掉。
+            sealer.beginNextSegment()
+            return
+        }
+
         recorder?.stop()
         let fileURL = recorder?.url
         recorder = nil
@@ -140,14 +260,22 @@ final class WatchRecorder: NSObject, ObservableObject {
             let data = (try? Data(contentsOf: fileURL)) ?? Data()
             if !data.isEmpty {
                 let checksum = Digest.sha256(of: data)
-                let segStart = startedAt.addingTimeInterval(elapsed - Double(segmentSeconds))
-                let segEnd = startedAt.addingTimeInterval(elapsed)
+
+                // ★ 用 SegmentClock 决定这一段的起止时间 ★
+                // 旧算法 `startedAt + (elapsed - segmentSeconds)` 对每一段都算出同一个偏移
+                // （因为每段 elapsed 都 ≈ segmentSeconds），
+                // 于是**所有段的时间戳挤在同一处**，iPhone 上时间线彻底失真。
+                // 现在：段的起点 = 上一段的终点，由 clock 自己维护，不重叠、不漂移。
+                let window = clock.seal(recordedDuration: elapsed)
 
                 // 写入 Watch 本地库（保证手表重启也不丢）
+                // ★ state 默认 .recorded —— 未传输的段绝不能标成 verified，
+                // 否则保留策略会把还没传出去的录音删掉。
                 if let store {
                     _ = try? store.addSegment(
                         sessionID: sessionID, data: data,
-                        startedAt: segStart, endedAt: segEnd, sequence: sequence
+                        startedAt: window.startedAt, endedAt: window.endedAt,
+                        sequence: window.sequence
                     )
                 }
 
@@ -157,12 +285,14 @@ final class WatchRecorder: NSObject, ObservableObject {
                     fileName: fileURL.lastPathComponent,
                     byteCount: data.count,
                     sha256: checksum,
-                    sequence: sequence,
-                    startedAt: segStart,
-                    endedAt: segEnd
+                    sequence: window.sequence,
+                    startedAt: window.startedAt,
+                    endedAt: window.endedAt
                 ))
                 saveQueue()
                 pendingCount = queue.pendingCount
+                // ★ 边录边传：封一段就推一段，不用等整场结束 ★
+                scheduleTransfer()
             }
         }
 
@@ -175,7 +305,13 @@ final class WatchRecorder: NSObject, ObservableObject {
         pendingMarks.removeAll()
 
         // 开下一段
-        sequence += 1
+        // ★ sequence 由 clock 维护（clock.seal 已自增），这里不再手动 +1 ★
+        // 手动 +1 会和 clock 的计数错开一位，导致序号跳号，
+        // 完整性体检会误报「序列缺口」。
+        sequence = clock.sealedCount
+
+        // ★ 复位「当前段已封存」标记，让下一段能被再次封存 ★
+        sealer.beginNextSegment()
         do {
             let settings: [String: Any] = [
                 AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
@@ -192,6 +328,38 @@ final class WatchRecorder: NSObject, ObservableObject {
         } catch {
             lastError = "无法开始下一段：\(error.localizedDescription)"
             isRecording = false
+        }
+    }
+
+    // MARK: 传输轮次
+
+    /// 启动一轮传输（不阻塞 UI）。
+    ///
+    /// ★ 为什么用后台任务而不是前台轮询 ★
+    /// watchOS 息屏后 App 会被挂起，前台 Timer 不再触发。
+    /// 靠 `WCSession.transferFile` 的系统后台队列 + `WKApplicationRefreshBackgroundTask`
+    /// 才能在锁屏状态下继续把录音推向 iPhone。
+    func pumpTransfers() {
+        guard let coordinator else { return }
+        Task {
+            let report = await coordinator.pump(batchSize: 5)
+            await MainActor.run {
+                pendingCount = self.queue.pendingCount
+                if report.failed > 0 {
+                    self.lastError = "\(report.failed) 段传输失败，将自动重试"
+                } else if report.verified > 0 {
+                    self.lastError = nil
+                }
+            }
+        }
+    }
+
+    /// 每次封段后触发一轮传输 —— 边录边传，不用等整场结束。
+    private func scheduleTransfer() {
+        Task {
+            // 稍等一小会儿，让文件句柄彻底落盘
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await MainActor.run { self.pumpTransfers() }
         }
     }
 
@@ -216,6 +384,21 @@ final class WatchRecorder: NSObject, ObservableObject {
         try? FileManager.default.createDirectory(at: watchRoot, withIntermediateDirectories: true)
         if let data = try? queue.encoded() {
             try? AtomicFile.write(data, to: queueURL)
+        }
+    }
+
+    /// WCSession 传输完成回调的入口。
+    ///
+    /// - Parameter error: nil = 成功；非 nil = 失败
+    func handleTransferFinished(_ transfer: WCSessionFileTransfer, error: Error?) {
+        transferChannel?.handleTransferFinished(transfer: transfer, error: error)
+
+        // 无论成败都要刷新待传计数
+        pendingCount = queue.pendingCount
+
+        if let error {
+            // 失败：条目已在队列里标记为 failed，下一轮自动重试
+            lastError = "传输失败，将自动重试：\(error.localizedDescription)"
         }
     }
 
@@ -248,7 +431,9 @@ extension WatchRecorder: AVAudioRecorderDelegate {
 // MARK: - Watch 界面
 
 struct WatchContentView: View {
-    @StateObject private var recorder = WatchRecorder()
+    /// 用全局单例，而不是 `@StateObject` 新建一个。
+    /// 新建的话，WCSession 回调传回来的结果就找不到接收方了。
+    @ObservedObject private var recorder = WatchRecorder.shared
 
     var body: some View {
         VStack(spacing: 8) {
@@ -304,11 +489,65 @@ struct WatchContentView: View {
     }
 }
 
+// MARK: - WKApplicationDelegate 适配器
+//
+// ★ 为什么必须有它 ★
+//
+// 后台刷新任务的**接收端**不在 `scheduleBackgroundRefresh` 的闭包里，
+// 而是走 `WKApplicationDelegate.handle(_ backgroundTasks:)` ——
+// 系统在触发时把任务集交给 delegate，由 delegate 完成或放弃它们。
+//
+// 没有这个适配器，后台刷新任务**永远不会被触发**，
+// 手表息屏后就再也不会被系统唤醒去推传输 ——
+// 表现就是「录音一直堆在手表上，得多开一次 App 才传走」。
+//
+// ★ SwiftUI App 的接法 ★
+//
+// 用 `@WKApplicationDelegateAdaptor` 把 delegate 桥接进 SwiftUI 生命周期。
+// （旧写法是 `@WKExtensionDelegateAdaptor`，WKExtensionDelegate 自 watchOS 9.2 起已弃用。）
+
+private final class DayEchoApplicationDelegate: NSObject, WKApplicationDelegate {
+    func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
+        // 转发给协调器统一处理
+        Task { @MainActor in
+            WatchSessionCoordinator.shared.handleBackgroundRefresh(tasks: backgroundTasks)
+        }
+    }
+}
+
 @main
 struct DayEchoWatchApp: App {
+    /// ★ 后台刷新任务的接收端 ★
+    @WKApplicationDelegateAdaptor(DayEchoApplicationDelegate.self) private var appDelegate
+    @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        // ★ 启动即接线 ★
+        // WCSession 必须尽早激活：晚激活会让系统判定「手表没在用」，
+        // 后台传输队列被清掉，之前排队的录音要重传。
+        let coordinator = WatchSessionCoordinator.shared
+        coordinator.activateSession()
+        // 调度一次即可 —— 任务触发后会由 handleBackgroundRefresh 再排下一次，
+        // 避免重复调度互相取消。
+        coordinator.scheduleBackgroundRefresh()
+    }
+
     var body: some Scene {
         WindowGroup {
             WatchContentView()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active:
+                WatchSessionCoordinator.shared.activateSession()
+                WatchRecorder.shared.pumpTransfers()
+            case .background:
+                // ★ 进入后台：确保后台刷新已挂上（已挂则不重复挂）★
+                WatchSessionCoordinator.shared.scheduleBackgroundRefresh()
+                WatchRecorder.shared.pumpTransfers()
+            default:
+                break
+            }
         }
     }
 }

@@ -12,7 +12,8 @@ let package = Package(
         .executable(name: "DayEchoCLI", targets: ["DayEchoCLI"]),
         .executable(name: "DayEchoTestRunner", targets: ["DayEchoTestRunner"]),
         .executable(name: "SyntaxCheck", targets: ["SyntaxCheck"]),
-        .executable(name: "ApiAudit", targets: ["ApiAudit"])
+        .executable(name: "ApiAudit", targets: ["ApiAudit"]),
+        .executable(name: "PlistAudit", targets: ["PlistAudit"])
     ],
     targets: [
         .target(
@@ -49,6 +50,11 @@ let package = Package(
         .executableTarget(
             name: "SyntaxCheck",
             path: "Sources/SyntaxCheck",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .executableTarget(
+            name: "PlistAudit",
+            path: "Sources/PlistAudit",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(

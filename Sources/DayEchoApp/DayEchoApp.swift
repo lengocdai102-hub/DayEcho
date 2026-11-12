@@ -8,13 +8,52 @@ import DayEchoKit
 @main
 struct DayEchoApp: App {
     @StateObject private var model = DayEchoModel()
+    @StateObject private var receiver = PhoneReceiverModel()
+
+    init() {
+        // ★ 尽早激活接收端 ★
+        // WCSession 激活有延迟，早点激活才能在手表开始传时就已经在监听。
+        PhoneReceiveChannel.shared.activate()
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(model)
+                .environmentObject(receiver)
         }
     }
+}
+
+/// 把接收通道的状态暴露给界面。
+@MainActor
+final class PhoneReceiverModel: ObservableObject {
+    @Published var lastMessage: String = ""
+    @Published var corruptedCount = 0
+
+    init() {
+        let channel = PhoneReceiveChannel.shared
+        channel.onSegmentVerified = { [weak self] segment in
+            Task { @MainActor in
+                self?.lastMessage = "已接收并校验通过：第 \(segment.sequence) 段"
+                self?.corruptedCount = 0
+                // 通知主界面刷新录音库
+                NotificationCenter.default.post(name: .dayEchoSegmentsChanged, object: nil)
+            }
+        }
+        channel.onSegmentCorrupted = { [weak self] name, reason in
+            Task { @MainActor in
+                self?.lastMessage = "收到损坏的文件 \(name)：\(reason)（原始文件已保留）"
+                self?.corruptedCount += 1
+                NotificationCenter.default.post(name: .dayEchoSegmentsChanged, object: nil)
+            }
+        }
+    }
+}
+
+extension Notification.Name {
+    /// 录音库内容发生变化
+    static let dayEchoSegmentsChanged = Notification.Name("DayEcho.segmentsChanged")
 }
 
 @MainActor

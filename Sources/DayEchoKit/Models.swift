@@ -27,7 +27,7 @@ public struct AudioSegment: Codable, Identifiable, Hashable, Sendable {
         byteCount: Int,
         sha256: String,
         sequence: Int,
-        state: SegmentState = .recorded
+        state: SegmentState = .pending
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -43,14 +43,37 @@ public struct AudioSegment: Codable, Identifiable, Hashable, Sendable {
 }
 
 public enum SegmentState: String, Codable, Sendable {
-    /// Watch 已录制并落盘，尚未传到手机
-    case recorded
-    /// 已传到手机，等待校验
+    /// ★ 已录制并落盘，尚未开始传输 ★
+    ///
+    /// 这是**唯一**的落盘默认态 —— 见 `RecordingStore.addSegment`。
+    /// 只有等传输链路真正闭环（Watch 侧 `didFinish` 成功，
+    /// 且 iPhone 端回传 ACK 确认校验通过）之后，才允许流转到 `.verified`。
+    /// 清理策略（`applyRetention`）**严格只扫 `.verified`**，
+    /// 所以其余状态下的段永远不会被自动删除。
+    case pending
+
+    /// ★ 正在传输中 ★
+    ///
+    /// 落盘后、传输开始时进入此态。**只允许在冷启动时被重置** ——
+    /// 见 `PendingTransferQueue.resetInterruptedTransfers()`。
+    case inFlight
+
+    /// 已传到手机，等待 iPhone 端 ACK 校验确认
     case transferred
-    /// 校验通过，纳入可搜索/可播放集合
+
+    /// 校验通过（iPhone 端已确认收到且 SHA-256 一致），纳入可搜索/可播放集合
     case verified
+
     /// 校验失败（内容被截断或损坏）
     case corrupted
+
+    /// 是否属于「可被保留策略清理」的集合。
+    ///
+    /// ★ 这是数据安全的核心闸门 ★
+    /// 只有**已确认校验通过**的段才允许被清理。
+    /// 未传输、传输中、待确认、损坏的段一律永久保留 ——
+    /// 「损坏的原始数据也可能是用户唯一的副本，删了就真没了」。
+    public var isRetentionEligible: Bool { self == .verified }
 }
 
 // MARK: - 标记点

@@ -60,6 +60,7 @@ kit_files = %w[
   Sources/DayEchoKit/Models.swift
   Sources/DayEchoKit/RecordingStore.swift
   Sources/DayEchoKit/Transfer.swift
+  Sources/DayEchoKit/SegmentClock.swift
 ]
 kit_group = project.new_group('DayEchoKit', 'Sources/DayEchoKit')
 kit_files.each do |f|
@@ -189,6 +190,25 @@ watch_target.build_configurations.each do |cfg|
   s['INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp'] = 'NO'
   # ★ 绝不能设 WKWatchOnly=YES（那是独立手表 App 语义，与嵌入互斥）
   s.delete('INFOPLIST_KEY_WKWatchOnly')
+  # ★ 麦克风权限声明（watchOS 必填）★
+  # 漏掉这条的真实后果：在手表上点「开始录音」会被系统直接拒绝，
+  # AVAudioSession 激活失败，而且**没有任何错误提示**——
+  # 表现为「按了没反应」。iOS 侧声明了不代表 watch 侧自动继承，
+  # 每个 target 都要各自声明自己的权限。
+  s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] =
+    'DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的设备上。'
+  # ★ 后台音频模式（全天录音的正解）★
+  #
+  # UIBackgroundModes = audio 是 watchOS 上持续录音的关键：
+  # 只要音频录制会话处于激活状态，watchOS 就不会因锁屏/息屏挂起进程，
+  # 录音可以持续进行。
+  #
+  # WKExtendedRuntimeSession 不能替代它 —— 那个 API 有严格的系统时长配额，
+  # 是给闹钟/正念/理疗这类短时场景设计的，用来做全天录音会被系统掐断。
+  # 这里把 WKExtendedRuntimeSession 当作补充保活手段，UIBackgroundModes 才是主力。
+  s['INFOPLIST_KEY_UIBackgroundModes'] = ['audio']
+  # 前台持续显示录音状态（用户能一眼看出在录音）
+  s['INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents'] = 'YES'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
@@ -204,6 +224,8 @@ watch_target.frameworks_build_phase.add_file_reference(watch_kit_target.product_
 # watch app 的业务源码（SwiftUI @main 入口就在这里）
 watch_files = %w[
   Sources/DayEchoWatchApp/WatchApp.swift
+  Sources/DayEchoWatchApp/WatchTransferChannel.swift
+  Sources/DayEchoWatchApp/WatchSessionCoordinator.swift
 ]
 watch_group = project.new_group('DayEchoWatchApp', 'Sources/DayEchoWatchApp')
 watch_files.each do |f|
@@ -258,6 +280,7 @@ end
 app_files = %w[
   Sources/DayEchoApp/DayEchoApp.swift
   Sources/DayEchoApp/ContentView.swift
+  Sources/DayEchoApp/PhoneReceiveChannel.swift
 ]
 app_group = project.new_group('DayEchoApp', 'Sources/DayEchoApp')
 app_files.each do |f|
@@ -312,8 +335,15 @@ ios_target.build_configurations.each do |cfg|
   s['INFOPLIST_KEY_UISupportedInterfaceOrientations'] = 'UIInterfaceOrientationPortrait'
   s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] =
     'DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的设备上。'
-  s['INFOPLIST_KEY_NSHealthShareUsageDescription'] =
-    '用于把心率与活动信息关联到录音时间点，全部在本地处理。'
+  # ★ 已删除 NSHealthShareUsageDescription ★
+  # 本项目不接入 HealthKit（仓库里没有任何 HKHealthStore 调用），
+  # 声明一个用不到的权限只会让用户在授权弹窗里困惑，
+  # App Store 审核也会追问「为什么需要读取健康数据」。用不到就删。
+  #
+  # ★ 顺带：iOS 侧也需要后台音频模式 ★
+  # 否则手机在后台时无法接收并落盘手表传来的录音，
+  # 用户锁屏后手机端就停止接收 —— 表现为「手机不在身边时手表录音传不过来」。
+  s['INFOPLIST_KEY_UIBackgroundModes'] = ['audio', 'processing']
   s['ASSETCATALOG_COMPILER_APPICON_NAME'] = 'AppIcon'
   s['CODE_SIGN_STYLE'] = 'Automatic'
   s['SWIFT_EMIT_LOC_STRINGS'] = 'YES'

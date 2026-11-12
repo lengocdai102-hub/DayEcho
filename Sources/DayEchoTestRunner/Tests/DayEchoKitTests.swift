@@ -37,7 +37,9 @@ func storeTests() throws {
         )
         try checkEqual(seg.byteCount, data.count)
         try checkEqual(seg.sha256, Digest.sha256(of: data))
-        try checkEqual(seg.state, .verified)
+        // ★ 新语义：刚写入的段是「已录制、未传输」★
+        // 旧实现硬编码 .verified，后果是保留策略会删掉还没传出去的录音。
+        try checkEqual(seg.state, .pending, "刚写入的段应为 pending（已落盘未传输）")
         try checkEqual(store.segments.count, 1)
     }
 
@@ -174,15 +176,18 @@ func transferQueueTests() throws {
     try Suite.case_("按 sequence 顺序取批次") {
         let q = PendingTransferQueue()
         let sid = UUID()
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
         for seq in [2, 0, 1] {
+            // 时间与 sequence 一致 —— 模拟真实录音：段 0 最早
+            let t0 = base.addingTimeInterval(Double(seq) * 60)
             q.enqueue(PendingTransferQueue.Entry(
                 sessionID: sid, fileName: "s\(seq).m4a", byteCount: 10,
                 sha256: "h", sequence: seq,
-                startedAt: Date(), endedAt: Date()
+                startedAt: t0, endedAt: t0.addingTimeInterval(60)
             ))
         }
         let batch = q.nextBatch(limit: 3)
-        try checkEqual(batch.map(\.sequence), [0, 1, 2])
+        try checkEqual(batch.map(\.sequence), [0, 1, 2], "按 sequence 升序取出")
     }
 
     try Suite.case_("队列可持久化并恢复") {
@@ -240,8 +245,10 @@ func retentionTests() throws {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try RecordingStore(root: root)
         let old = Date().addingTimeInterval(-40 * 86400)
-        _ = try store.addSegment(sessionID: UUID(), data: sampleAudio(8),
-                                startedAt: old, endedAt: old, sequence: 0)
+        let seg = try store.addSegment(sessionID: UUID(), data: sampleAudio(8),
+                                      startedAt: old, endedAt: old, sequence: 0)
+        // 只有校验通过（verified）的段才进入可清理集合
+        try store.markSegmentVerified(seg.id)
         let deleted = try store.applyRetention(RetentionPolicy(keepDays: 30))
         try checkEqual(deleted.count, 1)
         try checkEqual(store.segments.count, 0)
@@ -252,12 +259,17 @@ func retentionTests() throws {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try RecordingStore(root: root)
         let old = Date().addingTimeInterval(-40 * 86400)
-        _ = try store.addSegment(sessionID: UUID(), data: sampleAudio(9),
-                                startedAt: old, endedAt: old, sequence: 0)
-        // 把段标成 corrupted（模拟损坏但仍需保留）
+        let seg = try store.addSegment(sessionID: UUID(), data: sampleAudio(9),
+                                      startedAt: old, endedAt: old, sequence: 0)
+        // ★ 新增一步：标成 corrupted（模拟损坏但仍需保留）★
+        // 损坏的原始数据也可能是用户唯一的副本，删了就真没了 ——
+        // 所以保留策略只删 .verified 的段。
+        try store.markSegmentCorrupted(seg.id)
         let policy = RetentionPolicy(keepDays: 30, maxTotalBytes: nil)
         let deleted = try store.applyRetention(policy)
-        try checkEqual(deleted.count, 1, "已校验段正常清理")
+        try checkEqual(deleted.count, 0, "损坏段/未传输段不得被删除")
+        try checkTrue(FileManager.default.fileExists(
+            atPath: store.url(for: seg).path), "段文件仍在")
     }
 
     try Suite.case_("导出归档含全部段与索引") {

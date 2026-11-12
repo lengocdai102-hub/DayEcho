@@ -66,6 +66,15 @@ jobs:
       - name: Check Swift syntax
         run: swift run SyntaxCheck
 
+      # ---- 2c. plist 权限静态审计 ----
+      # 拦「只有真机才暴露」的两类致命问题：
+      #   1. 漏声明 NSMicrophoneUsageDescription → 真机点开始录音被系统静默拒绝
+      #   2. 漏声明 UIBackgroundModes=audio → 锁屏后进程被挂起，录音出现空洞
+      # 同时核对「声明了但源码没用」的冗余权限，以及
+      # transferFile / moveItem / setActive / inFlight 恢复等关键实现是否接上。
+      - name: Audit plist permissions and background-audio wiring
+        run: swift run PlistAudit
+
       # ---- 3. 生成 Xcode 工程 ----
       # 工程是脚本生成的（不提交 .xcodeproj），保证配置永远可复现。
       - name: Generate Xcode project

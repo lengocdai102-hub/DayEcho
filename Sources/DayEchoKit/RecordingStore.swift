@@ -100,8 +100,12 @@ public final class RecordingStore: @unchecked Sendable {
             at: root.appendingPathComponent("segments"),
             withIntermediateDirectories: true
         )
+        // ★ 编解码器必须用同一套日期策略 ★
+        // 写入用 `.iso8601`，解码若用默认 JSONDecoder（日期按 Double 时间戳），
+        // 解码必然失败 → 索引被当成损坏丢弃 → **用户全部录音凭空消失**。
+        // 这个 bug 只在「重启 App」时暴露，所以单元测试当时全绿。
         if let data = try? Data(contentsOf: indexURL),
-           let decoded = try? JSONDecoder().decode(StoreIndex.self, from: data) {
+           let decoded = try? Self.makeDecoder().decode(StoreIndex.self, from: data) {
             self.index = decoded
         } else {
             // 索引缺失或损坏：不抛错，从空库开始 —— 至少不阻断 App 使用
@@ -113,13 +117,23 @@ public final class RecordingStore: @unchecked Sendable {
 
     /// 写入一个录音段。返回带校验和的段元数据。
     /// 音频数据与元数据要么都成功，要么都不生效。
+    /// - Parameter state: 该段的传输状态。
+    ///   **默认必须是 `.pending`（已落盘、尚未传输），不是 `.verified`。**
+    ///   ★ 原实现在这里硬编码 `.verified` —— 后果是「保留策略会删掉还没传出去的录音」。
+    ///   保留策略**严格只扫 `.verified`**（见 `SegmentState.isRetentionEligible`），
+    ///   所以未传输的段一旦被标成 `.verified`，超期后就被清掉了 ——
+    ///   而用户可能还没来得及让手机取走它。数据不可丢是这个项目的第一原则。
+    ///   ★ 只有等传输链路真正闭环后才允许流转到 `.verified`：
+    ///     Watch 侧 `didFinish` 成功 → `.transferred`，
+    ///     iPhone 端回传 ACK 且 SHA-256 比对一致 → `.verified`。
     @discardableResult
     public func addSegment(
         sessionID: UUID,
         data: Data,
         startedAt: Date,
         endedAt: Date,
-        sequence: Int
+        sequence: Int,
+        state: SegmentState = .pending
     ) throws -> AudioSegment {
         guard !data.isEmpty else { throw StoreError.emptySegment("session \(sessionID) seq \(sequence)") }
 
@@ -138,7 +152,7 @@ public final class RecordingStore: @unchecked Sendable {
             byteCount: data.count,
             sha256: checksum,
             sequence: sequence,
-            state: .verified
+            state: state
         )
 
         try queue.sync {
@@ -155,6 +169,58 @@ public final class RecordingStore: @unchecked Sendable {
             try persistIndex()
         }
         return segment
+    }
+
+    // MARK: 段状态流转
+
+    /// 把某段标记为「传输中」。
+    ///
+    /// 只在**冷启动恢复**时把残留的 `.inFlight` 打回 `.pending`，
+    /// 运行期绝不批量改这个状态 —— 见 `PendingTransferQueue.resetInterruptedTransfers()`。
+    public func markSegmentInFlight(_ segmentID: UUID) throws {
+        try queue.sync {
+            guard let i = index.segments.firstIndex(where: { $0.id == segmentID }) else { return }
+            index.segments[i].state = .inFlight
+            try persistIndex()
+        }
+    }
+
+    /// 把某段标记回「待传输」。
+    /// 冷启动恢复时用于把悬挂的 `.inFlight` 打回 `.pending`。
+    public func markSegmentPending(_ segmentID: UUID) throws {
+        try queue.sync {
+            guard let i = index.segments.firstIndex(where: { $0.id == segmentID }) else { return }
+            index.segments[i].state = .pending
+            try persistIndex()
+        }
+    }
+
+    /// 把某段标记为已传输（Watch 侧 didFinish 成功，等待 iPhone ACK）。
+    public func markSegmentTransferred(_ segmentID: UUID) throws {
+        try queue.sync {
+            guard let i = index.segments.firstIndex(where: { $0.id == segmentID }) else { return }
+            index.segments[i].state = .transferred
+            try persistIndex()
+        }
+    }
+
+    /// 把某段标记为校验通过 —— 只有这时它才进入「可被保留策略清理」的集合。
+    public func markSegmentVerified(_ segmentID: UUID) throws {
+        try queue.sync {
+            guard let i = index.segments.firstIndex(where: { $0.id == segmentID }) else { return }
+            index.segments[i].state = .verified
+            try persistIndex()
+        }
+    }
+
+    /// 把某段标记为损坏。**段本身仍保留在库里**，只改状态 ——
+    /// 损坏的原始数据也可能是用户唯一的副本，删了就真没了。
+    public func markSegmentCorrupted(_ segmentID: UUID) throws {
+        try queue.sync {
+            guard let i = index.segments.firstIndex(where: { $0.id == segmentID }) else { return }
+            index.segments[i].state = .corrupted
+            try persistIndex()
+        }
     }
 
     // MARK: 标记
@@ -190,7 +256,8 @@ public final class RecordingStore: @unchecked Sendable {
     }
 
     public func totalBytes() -> Int {
-        queue.sync { index.segments.reduce(0) { $0 + $1.byteCount } }
+        // Int64 中间累加防止 32 位平台溢出，最后夹回 Int（单库不可能超过 2GiB）
+        queue.sync { Int(min(Int64(index.segments.reduce(Int64(0)) { $0 + Int64($1.byteCount) }), Int64(Int.max))) }
     }
 
     // MARK: 完整性体检
@@ -247,7 +314,9 @@ public final class RecordingStore: @unchecked Sendable {
             }
             for seg in index.segments {
                 var shouldDelete = false
-                if seg.state == .verified, let cutoff, seg.endedAt < cutoff {
+                // ★ 严格只清 .verified ★
+                // 其余状态（.pending / .inFlight / .transferred / .corrupted）一律永久保留。
+                if seg.state.isRetentionEligible, let cutoff, seg.endedAt < cutoff {
                     shouldDelete = true
                 }
                 if shouldDelete { deleted.append(seg) } else { keep.append(seg) }
@@ -315,5 +384,14 @@ public final class RecordingStore: @unchecked Sendable {
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(index)
         try AtomicFile.write(data, to: indexURL)
+    }
+
+    /// 与 `persistIndex` 的编码器严格对称的解码器。
+    /// ★ 绝不能各写各的 ★ —— 日期策略不一致会导致解码静默失败，
+    /// 表现为「重启后所有录音消失」，是最难查的一类数据丢失。
+    static func makeDecoder() -> JSONDecoder {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
     }
 }
