@@ -247,7 +247,7 @@ func retentionTests() throws {
         try checkEqual(store.segments.count, 0)
     }
 
-    try Suite.case_("未传输段永不被保留策略删除") {
+    Suite.case_("未传输段永不被保留策略删除") {
         let root = tempDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try RecordingStore(root: root)
