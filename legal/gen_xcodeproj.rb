@@ -68,32 +68,76 @@ kit_files.each do |f|
 end
 
 # ============================================================
-# 3. watchOS App target
+# 3. watchOS 三件套：Watch App（壳） + WatchKit Extension（业务）
 # ============================================================
-watch_target = project.new_target(:application, 'DayEchoWatch', :watchos, WATCH_MIN)
-watch_target.build_configurations.each do |cfg|
+# watchOS 的工程结构和 iOS 不一样：
+#   DayEchoWatchApp   (watch2_app)        —— 壳，不放业务代码
+#   DayEchoWatchExtension (watch2_extension) —— 真正的 App 入口与界面
+#   iOS App 通过 "Embed Watch Content" 嵌入 watch2_app
+#
+# 踩过的坑：用 :watch2_app 单一 target 时，WatchKit 扩展缺失，
+# 编译报 "Unable to find module 'WatchKit'"。
+# 另一个坑：watch2_extension 必须作为 watch2_app 的依赖，
+# 且 watch2_app 必须被 iOS App 嵌入，否则装到手表上点不开。
+
+# ---- 3a0. watchOS 版 DayEchoKit ----
+# 同一个 framework target 不能同时产 iOS 与 watchOS 版本（平台不同、
+# 头文件不同）。watchOS extension 必须链接 watchOS 架构的 Kit，
+# 否则链接期报 "building for iOS but linking in watchOS framework"。
+watch_kit_target = project.new_target(:framework, 'DayEchoKitWatch', :watchos, WATCH_MIN)
+watch_kit_target.build_configurations.each do |cfg|
   s = cfg.build_settings
-  s['PRODUCT_BUNDLE_IDENTIFIER'] = WATCH_BUNDLE_ID
-  s['PRODUCT_NAME'] = 'DayEchoWatch'
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.dayecho.kit.watch'
+  s['PRODUCT_NAME'] = 'DayEchoKit'
   s['MARKETING_VERSION'] = '1.0.0'
   s['CURRENT_PROJECT_VERSION'] = '1'
   s['SWIFT_VERSION'] = '6.0'
   s['WATCHOS_DEPLOYMENT_TARGET'] = WATCH_MIN
-  s['TARGETED_DEVICE_FAMILY'] = '4'      # Apple Watch
+  s['TARGETED_DEVICE_FAMILY'] = '4'
+  s['DEFINES_MODULE'] = 'YES'
+  s['SKIP_INSTALL'] = 'YES'
+  s['BUILD_LIBRARY_FOR_DISTRIBUTION'] = 'NO'
+  s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
+  s['CODE_SIGNING_ALLOWED'] = 'NO'
+  s['CODE_SIGNING_REQUIRED'] = 'NO'
+  s['CODE_SIGN_IDENTITY'] = ''
+  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+end
+
+watch_kit_group = project.new_group('DayEchoKitWatch', 'Sources/DayEchoKit')
+kit_files.each do |f|
+  path = File.join(ROOT, f)
+  next unless File.exist?(path)
+  ref = watch_kit_group.new_reference(File.basename(f))
+  watch_kit_target.add_file_references([ref])
+end
+
+# ---- 3a. WatchKit Extension（业务代码在这里）----
+watch_ext = project.new_target(:watch2_extension, 'DayEchoWatchExtension', :watchos, WATCH_MIN)
+watch_ext.build_configurations.each do |cfg|
+  s = cfg.build_settings
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = "#{WATCH_BUNDLE_ID}.extension"
+  s['PRODUCT_NAME'] = 'DayEchoWatchExtension'
+  s['MARKETING_VERSION'] = '1.0.0'
+  s['CURRENT_PROJECT_VERSION'] = '1'
+  s['SWIFT_VERSION'] = '6.0'
+  s['WATCHOS_DEPLOYMENT_TARGET'] = WATCH_MIN
+  s['TARGETED_DEVICE_FAMILY'] = '4'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
-  s['INFOPLIST_KEY_WKCompanionAppBundleIdentifier'] = BUNDLE_ID
-  s['INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp'] = 'YES'
+  s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] =
+    'DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的设备上。'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
   s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
   s['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
+  s['SKIP_INSTALL'] = 'YES'
 end
 
-# watchOS App 依赖 Kit
-watch_target.add_dependency(kit_target)
-watch_target.frameworks_build_phase.add_file_reference(kit_target.product_reference)
+# Extension 依赖 watchOS 版 Kit（见下方 watch_kit_target）
+watch_ext.add_dependency(watch_kit_target)
+watch_ext.frameworks_build_phase.add_file_reference(watch_kit_target.product_reference)
 
 watch_files = %w[
   Sources/DayEchoWatchApp/WatchApp.swift
@@ -103,18 +147,43 @@ watch_files.each do |f|
   path = File.join(ROOT, f)
   next unless File.exist?(path)
   ref = watch_group.new_reference(File.basename(f))
-  watch_target.add_file_references([ref])
+  watch_ext.add_file_references([ref])
 end
 
-# watchOS 的本地化
+# Extension 的本地化
 watch_lproj_group = project.new_group('WatchLocalization', 'Sources/DayEchoWatchApp/WatchResources')
 %w[en zh-Hans].each do |lang|
-  lproj_path = File.join(ROOT, "Sources/DayEchoWatchApp/Resources/#{lang}.lproj")
+  lproj_path = File.join(ROOT, "Sources/DayEchoWatchApp/WatchResources/#{lang}.lproj")
   next unless File.directory?(lproj_path)
   vg = watch_lproj_group.new_variant_group("#{lang}.lproj")
   vg.new_reference(File.join(lproj_path, 'Localizable.strings'))
-  watch_target.add_resources([vg])
+  watch_ext.add_resources([vg])
 end
+
+# ---- 3b. Watch App（壳）----
+watch_target = project.new_target(:watch2_app, 'DayEchoWatch', :watchos, WATCH_MIN)
+watch_target.build_configurations.each do |cfg|
+  s = cfg.build_settings
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = WATCH_BUNDLE_ID
+  s['PRODUCT_NAME'] = 'DayEchoWatch'
+  s['MARKETING_VERSION'] = '1.0.0'
+  s['CURRENT_PROJECT_VERSION'] = '1'
+  s['SWIFT_VERSION'] = '6.0'
+  s['WATCHOS_DEPLOYMENT_TARGET'] = WATCH_MIN
+  s['TARGETED_DEVICE_FAMILY'] = '4'
+  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  s['INFOPLIST_KEY_WKCompanionAppBundleIdentifier'] = BUNDLE_ID
+  s['INFOPLIST_KEY_WKWatchOnly'] = 'YES'
+  s['CODE_SIGNING_ALLOWED'] = 'NO'
+  s['CODE_SIGNING_REQUIRED'] = 'NO'
+  s['CODE_SIGN_IDENTITY'] = ''
+  s['SKIP_INSTALL'] = 'YES'
+  s['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
+end
+
+# 壳依赖 Extension —— 缺这个 Xcode 不会把扩展塞进 .app
+watch_target.add_dependency(watch_ext)
 
 # ============================================================
 # 4. iOS App 依赖与嵌入
@@ -207,6 +276,7 @@ end
 # ============================================================
 scheme = Xcodeproj::XCScheme.new
 scheme.add_build_target(kit_target)
+scheme.add_build_target(watch_ext)
 scheme.add_build_target(watch_target)
 scheme.add_build_target(ios_target)
 scheme.set_launch_target(ios_target)
@@ -217,3 +287,5 @@ puts "已生成 #{PROJ_PATH}"
 puts "ios:   #{ios_target.name}  src=#{ios_target.source_build_phase.files.count} res=#{ios_target.resources_build_phase.files.count}"
 puts "kit:   #{kit_target.name}  src=#{kit_target.source_build_phase.files.count}"
 puts "watch: #{watch_target.name}  src=#{watch_target.source_build_phase.files.count}"
+puts "wkit: #{watch_kit_target.name}  src=#{watch_kit_target.source_build_phase.files.count}"
+puts "wext: #{watch_ext.name}  src=#{watch_ext.source_build_phase.files.count} res=#{watch_ext.resources_build_phase.files.count}"

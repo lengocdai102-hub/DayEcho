@@ -147,13 +147,18 @@ jobs:
       # ---- 9. 验证 watchOS App 已嵌入 iOS 包 ----
       # 这是最容易悄悄坏掉的地方：watch target 编过了，但没被
       # "Embed Watch Content" 阶段塞进 .app，装到手机上会没有手表 App。
+      #
+      # watchOS 的包结构是两层：
+      #   DayEcho.app/PlugIns/DayEchoWatch.app          <- watch2_app 壳
+      #   DayEcho.app/PlugIns/DayEchoWatch.app/PlugIns/DayEchoWatchExtension.appex  <- 业务代码
+      # 只验到壳这一层不够 —— 扩展缺失的话手表上点开就白屏。
       - name: Verify watchOS app is embedded
         run: |
           set -e
           APP="$RUNNER_TEMP/DayEcho-device.xcarchive/Products/Applications/DayEcho.app"
-          FOUND=$(find "$APP/PlugIns" -maxdepth 2 -name "*.app" 2>/dev/null | head -1)
+          FOUND=$(find "$APP/PlugIns" -maxdepth 2 -name "DayEchoWatch.app" 2>/dev/null | head -1)
           if [ -z "$FOUND" ]; then
-            echo "::error::iOS 包里没找到嵌入的 watchOS App（PlugIns 为空）"; exit 1
+            echo "::error::iOS 包里没找到嵌入的 DayEchoWatch.app（PlugIns 为空）"; exit 1
           fi
           echo "--- 嵌入的 watch App: $FOUND ---"
           WBIN="$FOUND/DayEchoWatch"
@@ -162,7 +167,20 @@ jobs:
           fi
           lipo -info "$WBIN"
           lipo -info "$WBIN" | grep -q 'arm64' || { echo "::error::watch 二进制不是 arm64"; exit 1; }
-          echo "✅ watchOS App 已正确嵌入且为 arm64"
+
+          # 关键：扩展必须存在
+          APPEX=$(find "$FOUND/PlugIns" -maxdepth 2 -name "*.appex" 2>/dev/null | head -1)
+          if [ -z "$APPEX" ]; then
+            echo "::error::watch App 里没有 WatchKit Extension（.appex）——手表上会点不开"; exit 1
+          fi
+          echo "--- 嵌入的 Extension: $APPEX ---"
+          EBIN="$APPEX/DayEchoWatchExtension"
+          if [ ! -f "$EBIN" ]; then
+            echo "::error::Extension 里没有可执行文件"; exit 1
+          fi
+          lipo -info "$EBIN"
+          lipo -info "$EBIN" | grep -q 'arm64' || { echo "::error::Extension 二进制不是 arm64"; exit 1; }
+          echo "✅ watchOS App 与 Extension 均已正确嵌入且为 arm64"
 
       # ---- 10. 收集产物 ----
       - name: Collect artifacts
