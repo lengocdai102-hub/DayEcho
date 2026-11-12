@@ -80,6 +80,47 @@ jobs:
       # 而 watchapp2 / watchkit2-extension 的 product type spec 只存在于
       # watchsimulator 域 → "unable to resolve product type ... in domain
       # 'iphonesimulator'"。-destination 让 Xcode 按 target 各自解析平台。
+      # ---- 静态防回退：直接检查落盘的 pbxproj ----
+      #
+      # 为什么必须有这一条：
+      #   PBXCopyFilesBuildPhase 缺 dstPath 时，Xcode 不会报错，
+      #   而是把整个 "Embed Watch Content" phase 当成空操作**静默跳过**。
+      #   症状是「产出的 .app 里没有 Watch/ 目录」，
+      #   只有跑到 archive 之后的校验步骤才暴露，白白浪费一整轮 CI。
+      #   所以在工程生成后立刻对 pbxproj 文本做硬断言。
+      - name: Assert Embed Watch Content phase is not a silent no-op
+        run: |
+          set -e
+          PBX="DayEcho.xcodeproj/project.pbxproj"
+          test -f "$PBX" || { echo "::error::找不到 $PBX"; exit 1; }
+
+          # 取 "Embed Watch Content" 这个 phase 节点所在的整个块
+          BLOCK=$(awk '/isa = PBXCopyFilesBuildPhase;/{buf=""; inblk=1} inblk{buf=buf $0 "\n"} inblk && /runOnlyForDeploymentPostprocessing/{inblk=0} /name = "Embed Watch Content";/{found=buf} END{print found}' "$PBX")
+
+          echo "--- Embed Watch Content phase 节点 ---"
+          echo "$BLOCK"
+
+          # 判据 1：dstPath 必须在（缺失 => phase 静默空转）
+          if ! echo "$BLOCK" | grep -qF 'dstPath = "$(CONTENTS_FOLDER_PATH)/Watch"'; then
+            echo "::error::Embed Watch Content phase 缺 dstPath = \"\$(CONTENTS_FOLDER_PATH)/Watch\" —— Xcode 会静默跳过整个 phase"
+            exit 1
+          fi
+
+          # 判据 2：dstSubfolderSpec 必须是 16（Products Directory）
+          if ! echo "$BLOCK" | grep -qE 'dstSubfolderSpec = 16;'; then
+            echo "::error::Embed Watch Content phase 的 dstSubfolderSpec 必须是 16，实际："
+            echo "$BLOCK" | grep -E 'dstSubfolderSpec' || true
+            exit 1
+          fi
+
+          # 判据 3：PBXBuildFile 必须带 ATTRIBUTES = (RemoveHeadersOnCopy, )
+          if ! grep -qE 'DayEchoWatch\.app in Embed Watch Content.*settings = \{ATTRIBUTES = \(RemoveHeadersOnCopy, \); \}' "$PBX"; then
+            echo "::error::DayEchoWatch.app 的 PBXBuildFile 缺 settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }"
+            exit 1
+          fi
+
+          echo "::notice::Embed Watch Content phase 配置完整（dstPath + dstSubfolderSpec=16 + RemoveHeadersOnCopy）"
+
       - name: Build iOS app (simulator)
         run: |
           xcodebuild \
@@ -137,6 +178,45 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             build
+
+      # ---- 6a-2. 拷贝落盘硬断言（防 silent no-op 复发）----
+      #
+      # 「Embed Watch Content」phase 一旦因 dstPath 缺失/非法被 Xcode 静默跳过，
+      # 编译全程 0 报错，只有产物里没有 Watch/ 目录这一个后果。
+      # 所以在 device build 之后立刻断言，不要等到 archive 之后才发现。
+      - name: Assert Watch App was copied into host bundle (post-build)
+        run: |
+          set -e
+          HOST_APP=$(find "$RUNNER_TEMP" -path "*/Build/Products/Release-iphoneos/DayEcho.app" -type d 2>/dev/null | head -n 1)
+          if [ -z "$HOST_APP" ]; then
+            echo "::error::没找到 Release-iphoneos/DayEcho.app"
+            exit 1
+          fi
+          echo "HOST_APP=$HOST_APP"
+
+          if [ ! -d "$HOST_APP/Watch/DayEchoWatch.app" ]; then
+            echo "::error::Embed Watch Content 静默跳过：$HOST_APP/Watch/DayEchoWatch.app 不存在"
+            echo "--- 实际结构 ---"
+            find "$HOST_APP" -maxdepth 3 | sed "s|$HOST_APP|.|" | head -40
+            exit 1
+          fi
+          echo "✅ Watch App 已成功嵌入：$HOST_APP/Watch/DayEchoWatch.app"
+
+          # watch App 的可执行文件必须是 arm64（真机架构）
+          WBIN="$HOST_APP/Watch/DayEchoWatch.app/DayEchoWatch"
+          if [ ! -f "$WBIN" ]; then
+            echo "::error::嵌入的 watch App 里没有可执行文件 DayEchoWatch"
+            ls -la "$HOST_APP/Watch/DayEchoWatch.app"
+            exit 1
+          fi
+          lipo -info "$WBIN"
+          lipo -info "$WBIN" | grep -q 'arm64' || { echo "::error::watch 二进制不是 arm64"; exit 1; }
+
+          echo "--- 嵌入产物的判据键值 ---"
+          for K in CFBundleIdentifier WKCompanionAppBundleIdentifier WKApplication WKWatchOnly WKRunsIndependentlyOfCompanionApp; do
+            V=$(/usr/libexec/PlistBuddy -c "Print :$K" "$HOST_APP/Watch/DayEchoWatch.app/Info.plist" 2>/dev/null || echo "<NOT_SET>")
+            echo "watch $K = $V"
+          done
 
       # ---- 6b. 诊断：精准抓嵌入产物的关键判据键值 ----
       #
