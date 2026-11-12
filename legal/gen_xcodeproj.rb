@@ -233,14 +233,27 @@ ios_target.frameworks_build_phase.add_file_reference(kit_target.product_referenc
 ios_target.add_dependency(watch_target)
 # "Embed Watch Content" build phase —— 缺了这个 .app 里不会带手表 App
 #
-# ★ dst_subfolder_spec 用 :products_directory (16)，不是 :plug_ins (13)。
-#   Xcode 对名为 "Embed Watch Content" 的 copy phase 有特殊处理：
-#   它把 watch app 放进宿主 iOS App 的 Watch/ 目录。
-#   :plug_ins (13) 是旧版 watch2_app 壳 + extension 布局用的，
-#   两者混用会得到一个 Xcode 不认的产物结构。
+# ★ "Embed Watch Content" 必须与真实 Xcode 工程逐字对齐 ★
+#
+# 对照样本：Bark（Finb/Bark）—— 现代单 target watchOS App 工程，CI 上可正常打包。
+#   dstPath           = "$(CONTENTS_FOLDER_PATH)/Watch"
+#   dstSubfolderSpec  = 16
+#   PBXBuildFile settings = {ATTRIBUTES = (RemoveHeadersOnCopy, )}
+#
+# 之前用 xcodeproj 的 symbol_dst_subfolder_spec = :products_directory 只写了
+# dstSubfolderSpec=16，**没写 dstPath**。缺 dstPath 时 Xcode 不知道该拷到
+# 哪个目录，整个 copy phase 被**静默跳过** —— 编译不报错，
+# 但产出的 DayEcho.app 里根本没有 Watch/ 目录，
+# 表现为「iOS 包里没找到嵌入的 DayEchoWatch.app」。
 embed_phase = ios_target.new_copy_files_build_phase('Embed Watch Content')
 embed_phase.symbol_dst_subfolder_spec = :products_directory
+embed_phase.dst_path = '$(CONTENTS_FOLDER_PATH)/Watch'
 embed_phase.add_file_reference(watch_target.product_reference)
+
+# build file 的 ATTRIBUTES（真实 Xcode 工程同样有）
+embed_phase.files.each do |bf|
+  bf.settings = { 'ATTRIBUTES' => ['RemoveHeadersOnCopy'] }
+end
 
 app_files = %w[
   Sources/DayEchoApp/DayEchoApp.swift
