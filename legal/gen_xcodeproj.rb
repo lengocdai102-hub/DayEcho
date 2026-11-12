@@ -70,17 +70,26 @@ kit_files.each do |f|
 end
 
 # ============================================================
-# 3. watchOS 三件套：Watch App（壳） + WatchKit Extension（业务）
+# 3. watchOS App（现代单 target 布局）
 # ============================================================
-# watchOS 的工程结构和 iOS 不一样：
-#   DayEchoWatchApp   (watch2_app)        —— 壳，不放业务代码
-#   DayEchoWatchExtension (watch2_extension) —— 真正的 App 入口与界面
-#   iOS App 通过 "Embed Watch Content" 嵌入 watch2_app
+# watchOS 有两种工程布局：
+#   旧版  watch2_app (壳) + watchkit2-extension (业务)  —— 本项目已弃用
+#   现代  watchOS App 单 target，直接编 Swift 源码        —— 本项目采用
 #
-# 踩过的坑：用 :watch2_app 单一 target 时，WatchKit 扩展缺失，
-# 编译报 "Unable to find module 'WatchKit'"。
-# 另一个坑：watch2_extension 必须作为 watch2_app 的依赖，
-# 且 watch2_app 必须被 iOS App 嵌入，否则装到手表上点不开。
+# ★ 为什么弃用旧版 ★
+# 旧版要求 extension 带 NSExtensionPrincipalClass（WKExtensionDelegate 子类），
+# 而业务代码用的是现代 SwiftUI 生命周期（@main struct App），不该有 principal class。
+# 结果 appex 位置对、plist 键值全对，Xcode 的 embeddedBinaryValidationUtility
+# 却一律报 "WatchKit App doesn't contain any WatchKit Extensions whose
+# WKAppBundleIdentifier matches ..."。
+#
+# ★ 三个佐证 ★
+#   1) watch app 的 WKApplication = <NOT_SET>（现代 watch App 才有这个键）
+#   2) 产物里有 _WatchKitStub/WK（旧版 watchapp2 的标记）
+#   3) watch app 的 plist 用 -producttype com.apple.product-type.application.watchapp2 生成
+#
+# 现代布局下没有 extension、没有 PlugIns、没有 WatchKit 嵌入校验，
+# iOS App 通过 "Embed Watch Content"（dst = :watch）把手表 App 放进 Watch/ 目录。
 
 # ---- 3a0. watchOS 版 DayEchoKit ----
 # 同一个 framework target 不能同时产 iOS 与 watchOS 版本（平台不同、
@@ -116,69 +125,39 @@ kit_files.each do |f|
   watch_kit_target.add_file_references([ref])
 end
 
-# ---- 3a. WatchKit Extension（业务代码在这里）----
-watch_ext = project.new_target(:watch2_extension, 'DayEchoWatchExtension', :watchos, WATCH_MIN)
-watch_ext.build_configurations.each do |cfg|
-  s = cfg.build_settings
-  s['PRODUCT_BUNDLE_IDENTIFIER'] = "#{WATCH_BUNDLE_ID}.extension"
-  s['PRODUCT_NAME'] = 'DayEchoWatchExtension'
-  s['MARKETING_VERSION'] = '1.0.0'
-  s['CURRENT_PROJECT_VERSION'] = '1'
-  s['SWIFT_VERSION'] = '6.0'
-  s['WATCHOS_DEPLOYMENT_TARGET'] = WATCH_MIN
-  s['TARGETED_DEVICE_FAMILY'] = '4'
-  s['SUPPORTED_PLATFORMS'] = 'watchos watchsimulator'
-  s['SDKROOT'] = 'watchos'
-  # ★ 必须用真实 Info.plist 文件，不能用 GENERATE_INFOPLIST_FILE。
-  #
-  # 根因：INFOPLIST_KEY_NSExtensionPointIdentifier 生成的是「顶层」键
-  #       NSExtensionPointIdentifier，而 Xcode 的 ValidateEmbeddedBinary
-  #       要求它嵌在 NSExtension 字典里。INFOPLIST_KEY_* 无法表达嵌套字典，
-  #       所以必须写一个真的 plist 文件。
-  # 少了这个就报：
-  #   error: WatchKit App doesn't contain any WatchKit Extensions.
-  #   Verify that the value of NSExtensionPointIdentifier in your
-  #   WatchKit Extension's Info.plist is set to com.apple.watchkit.
-  s['GENERATE_INFOPLIST_FILE'] = 'NO'
-  s['INFOPLIST_FILE'] = 'legal/WatchExtension-Info.plist'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
-  # 注入给 plist 里的 $(WATCH_APP_BUNDLE_IDENTIFIER) 用
-  s['WATCH_APP_BUNDLE_IDENTIFIER'] = WATCH_BUNDLE_ID
-  s['CODE_SIGNING_ALLOWED'] = 'NO'
-  s['CODE_SIGNING_REQUIRED'] = 'NO'
-  s['CODE_SIGN_IDENTITY'] = ''
-  s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
-  s['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
-  s['SKIP_INSTALL'] = 'YES'
-end
-
-# Extension 依赖 watchOS 版 Kit（见下方 watch_kit_target）
-watch_ext.add_dependency(watch_kit_target)
-watch_ext.frameworks_build_phase.add_file_reference(watch_kit_target.product_reference)
-
-watch_files = %w[
-  Sources/DayEchoWatchApp/WatchApp.swift
-]
-watch_group = project.new_group('DayEchoWatchApp', 'Sources/DayEchoWatchApp')
-watch_files.each do |f|
-  path = File.join(ROOT, f)
-  next unless File.exist?(path)
-  ref = watch_group.new_reference(File.basename(f))
-  watch_ext.add_file_references([ref])
-end
-
-# Extension 的本地化
-watch_lproj_group = project.new_group('WatchLocalization', 'Sources/DayEchoWatchApp/WatchResources')
-%w[en zh-Hans].each do |lang|
-  lproj_path = File.join(ROOT, "Sources/DayEchoWatchApp/WatchResources/#{lang}.lproj")
-  next unless File.directory?(lproj_path)
-  vg = watch_lproj_group.new_variant_group("#{lang}.lproj")
-  vg.new_reference(File.join(lproj_path, 'Localizable.strings'))
-  watch_ext.add_resources([vg])
-end
-
-# ---- 3b. Watch App（壳）----
-watch_target = project.new_target(:watch2_app, 'DayEchoWatch', :watchos, WATCH_MIN)
+# ---- 3. watchOS App（现代单 target 布局）----
+#
+# ★★ 布局决策：为什么不用「watch2_app 壳 + watchkit2-extension」★★
+#
+# 旧布局（watchapp2 + watchkit2-extension）下，Xcode 的校验命令是：
+#   embeddedBinaryValidationUtility #     .../DayEchoWatch.app/PlugIns/DayEchoWatchExtension.appex #     -info-plist-path .../DayEchoWatch.app/Info.plist
+#
+# 这个工具要求 extension 有 NSExtensionPrincipalClass（WKExtensionDelegate 子类），
+# 才承认它是有效的 WatchKit Extension。而我们的业务代码用的是
+# 现代 SwiftUI 生命周期（@main struct DayEchoWatchApp: App），
+# 放在 extension 里根本不该有 principal class。
+#
+# 结果：appex 在磁盘上位置正确、plist 键值全部正确
+#   ext  WKAppBundleIdentifier      = com.dayecho.app.watchkitapp  ✓
+#   ext  NSExtensionPointIdentifier = com.apple.watchkit           ✓
+#   watch CFBundleIdentifier        = com.dayecho.app.watchkitapp  ✓
+# 但校验工具一律报：
+#   error: WatchKit App doesn't contain any WatchKit Extensions whose
+#   WKAppBundleIdentifier matches "..."
+#
+# ★ 三个佐证指向同一结论：
+#   1) watch app 的 Info.plist 里 WKApplication = <NOT_SET>
+#      —— WKApplication 是现代 SwiftUI watch App 的标记键
+#   2) 产物里有 _WatchKitStub/WK —— 旧版 watchapp2 的标记，
+#      现代 watch app 不该有
+#   3) watch app 的 plist 用 -producttype com.apple.product-type.application.watchapp2 生成
+#
+# ★ 解决方案：改用 Xcode 14+ 的现代单 target 布局。
+#   watchOS App 自己就是 com.apple.product-type.application，
+#   直接编译 Swift 源码，没有 extension，没有 PlugIns，
+#   iOS App 通过 "Embed Watch Content" 把它放进自己的 Watch/ 目录。
+#   整套 WatchKit Extension 嵌入校验（ValidateEmbeddedBinary）根本不适用。
+watch_target = project.new_target(:application, 'DayEchoWatch', :watchos, WATCH_MIN)
 watch_target.build_configurations.each do |cfg|
   s = cfg.build_settings
   s['PRODUCT_BUNDLE_IDENTIFIER'] = WATCH_BUNDLE_ID
@@ -192,32 +171,45 @@ watch_target.build_configurations.each do |cfg|
   s['SDKROOT'] = 'watchos'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  # ★ 现代 SwiftUI watch App 的必需标记键
+  s['INFOPLIST_KEY_WKApplication'] = 'YES'
+  # 依附式手表 App：反向绑定到宿主 iOS App
   s['INFOPLIST_KEY_WKCompanionAppBundleIdentifier'] = BUNDLE_ID
-  # ★ 绝不能设 WKWatchOnly=YES。
-  # WKWatchOnly=true 表示「独立手表 App」（不依附 iPhone App），
-  # 但我们把 watch app 嵌进了 iOS App 的 PlugIns/，
-  # 两者自相矛盾。Xcode 的 ValidateEmbeddedBinary 会因此报：
-  #   error: WatchKit App doesn't contain any WatchKit Extensions whose
-  #   WKAppBundleIdentifier matches "...".
-  # 依附式手表 App 不设这个键。
+  # ★ 绝不能设 WKWatchOnly=YES（那是独立手表 App 语义，与嵌入互斥）
   s.delete('INFOPLIST_KEY_WKWatchOnly')
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
   s['SKIP_INSTALL'] = 'YES'
   s['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
+  s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
 end
 
-# 壳依赖 Extension —— 缺这个 Xcode 不会把扩展塞进 .app
-watch_target.add_dependency(watch_ext)
+# watch app 依赖 watchOS 版 Kit
+watch_target.add_dependency(watch_kit_target)
+watch_target.frameworks_build_phase.add_file_reference(watch_kit_target.product_reference)
 
-# ★ watch2_app 必须把 Extension 嵌进自己的 PlugIns/ 目录。
-# 只有 add_dependency 是不够的 —— 那样编译能过，
-# 但产出的 .app 里没有 PlugIns/*.appex，
-# 设备上会报 "WatchKit App doesn't contain any WatchKit Extensions"。
-watch_ext_embed = watch_target.new_copy_files_build_phase('Embed App Extensions')
-watch_ext_embed.symbol_dst_subfolder_spec = :plug_ins
-watch_ext_embed.add_file_reference(watch_ext.product_reference)
+# watch app 的业务源码（SwiftUI @main 入口就在这里）
+watch_files = %w[
+  Sources/DayEchoWatchApp/WatchApp.swift
+]
+watch_group = project.new_group('DayEchoWatchApp', 'Sources/DayEchoWatchApp')
+watch_files.each do |f|
+  path = File.join(ROOT, f)
+  next unless File.exist?(path)
+  ref = watch_group.new_reference(File.basename(f))
+  watch_target.add_file_references([ref])
+end
+
+# watch app 的本地化
+watch_lproj_group = project.new_group('WatchLocalization', 'Sources/DayEchoWatchApp/WatchResources')
+%w[en zh-Hans].each do |lang|
+  lproj_path = File.join(ROOT, "Sources/DayEchoWatchApp/WatchResources/#{lang}.lproj")
+  next unless File.directory?(lproj_path)
+  vg = watch_lproj_group.new_variant_group("#{lang}.lproj")
+  vg.new_reference(File.join(lproj_path, 'Localizable.strings'))
+  watch_target.add_resources([vg])
+end
 
 # ============================================================
 # 4. iOS App 依赖与嵌入
@@ -228,8 +220,14 @@ ios_target.frameworks_build_phase.add_file_reference(kit_target.product_referenc
 # iOS App 依赖 watchOS App
 ios_target.add_dependency(watch_target)
 # "Embed Watch Content" build phase —— 缺了这个 .app 里不会带手表 App
+#
+# ★ dst_subfolder_spec 用 :products_directory (16)，不是 :plug_ins (13)。
+#   Xcode 对名为 "Embed Watch Content" 的 copy phase 有特殊处理：
+#   它把 watch app 放进宿主 iOS App 的 Watch/ 目录。
+#   :plug_ins (13) 是旧版 watch2_app 壳 + extension 布局用的，
+#   两者混用会得到一个 Xcode 不认的产物结构。
 embed_phase = ios_target.new_copy_files_build_phase('Embed Watch Content')
-embed_phase.symbol_dst_subfolder_spec = :plug_ins
+embed_phase.symbol_dst_subfolder_spec = :products_directory
 embed_phase.add_file_reference(watch_target.product_reference)
 
 app_files = %w[
@@ -313,15 +311,14 @@ end
 #   DayEchoWatch   —— 纯 watchOS，用 -destination 'generic/platform=watchOS Simulator'
 #
 # 关键：不能用 -sdk iphonesimulator —— 它会把所有 target 的 SDKROOT
-# 覆盖成 iphonesimulator，而 watchapp2 / watchkit2-extension 的
-# product type spec 只存在于 watchsimulator 域，报
+# 覆盖成 iphonesimulator，而 watchOS 的 product type spec 只存在于
+# watchsimulator 域，报
 # "unable to resolve product type ... in domain 'iphonesimulator'"。
 # 用 -destination 让 Xcode 按 target 各自解析平台。
 
 scheme = Xcodeproj::XCScheme.new
 scheme.add_build_target(kit_target)
 scheme.add_build_target(watch_kit_target)
-scheme.add_build_target(watch_ext)
 scheme.add_build_target(watch_target)
 scheme.add_build_target(ios_target)
 scheme.set_launch_target(ios_target)
@@ -329,7 +326,6 @@ scheme.save_as(PROJ_PATH, 'DayEcho', true)
 
 watch_scheme = Xcodeproj::XCScheme.new
 watch_scheme.add_build_target(watch_kit_target)
-watch_scheme.add_build_target(watch_ext)
 watch_scheme.add_build_target(watch_target)
 watch_scheme.set_launch_target(watch_target)
 watch_scheme.save_as(PROJ_PATH, 'DayEchoWatch', true)
@@ -338,6 +334,5 @@ project.save
 puts "已生成 #{PROJ_PATH}"
 puts "ios:   #{ios_target.name}  src=#{ios_target.source_build_phase.files.count} res=#{ios_target.resources_build_phase.files.count}"
 puts "kit:   #{kit_target.name}  src=#{kit_target.source_build_phase.files.count}"
-puts "watch: #{watch_target.name}  src=#{watch_target.source_build_phase.files.count}"
+puts "watch: #{watch_target.name}  src=#{watch_target.source_build_phase.files.count} res=#{watch_target.resources_build_phase.files.count}"
 puts "wkit: #{watch_kit_target.name}  src=#{watch_kit_target.source_build_phase.files.count}"
-puts "wext: #{watch_ext.name}  src=#{watch_ext.source_build_phase.files.count} res=#{watch_ext.resources_build_phase.files.count}"

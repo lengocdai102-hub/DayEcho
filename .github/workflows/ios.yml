@@ -93,7 +93,7 @@ jobs:
 
       # ---- 4b. 单独 typecheck watchOS Extension ----
       # 先单独查一遍，错误和 iOS 构建的错误分开报，定位更快。
-      - name: Typecheck watchOS extension
+      - name: Typecheck watchOS app
         run: |
           xcodebuild \
             -project DayEcho.xcodeproj \
@@ -104,7 +104,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build-for-testing \
             -quiet || {
-              echo "::error::watchOS Extension 类型检查未通过（详见上方日志）"; exit 1;
+              echo "::error::watchOS App 类型检查未通过（详见上方日志）"; exit 1;
             }
 
       # ---- 5. 编译 watchOS App（模拟器架构）----
@@ -127,6 +127,7 @@ jobs:
       # 在真机架构下能编译链接通过。unsigned（无证书无描述文件）。
       - name: Build for device (arm64, unsigned)
         run: |
+          set -o pipefail
           xcodebuild \
             -project DayEcho.xcodeproj \
             -scheme DayEcho \
@@ -154,24 +155,23 @@ jobs:
         if: failure()
         run: |
           set +e
-          echo "=== 1. 当前 Commit 与产物路径 ==="
+          echo "=== 1. 当前 Commit ==="
           git rev-parse --short HEAD
 
-          # 精准锁定 iOS 宿主 App 内部 PlugIns 目录下的 watch app，
-          # 避开 Release-watchos 下的裸产物
-          EMBEDDED_WATCH_APP=$(find "$RUNNER_TEMP" ~/Library/Developer/Xcode/DerivedData \
-            -path "*/Build/Products/Release-iphoneos/*.app/PlugIns/DayEchoWatch.app" \
-            -type d 2>/dev/null | head -n 1)
+          # ★ 现代单 target watchOS 布局：手表 App 在宿主包的 Watch/ 目录。
+          #   精准锁定它，避开 Release-watchos 下的裸产物。
+          HOST_APP=$(find "$RUNNER_TEMP" ~/Library/Developer/Xcode/DerivedData \
+            -path "*/Build/Products/Release-iphoneos/DayEcho.app" -type d 2>/dev/null | head -n 1)
 
-          if [ -z "$EMBEDDED_WATCH_APP" ]; then
-            echo "❌ 未找到嵌入的 PlugIns/DayEchoWatch.app，打印 Products 目录结构："
+          if [ -z "$HOST_APP" ]; then
+            echo "❌ 未找到 Release-iphoneos/DayEcho.app，打印 Products 目录结构："
             find "$RUNNER_TEMP" ~/Library/Developer/Xcode/DerivedData -maxdepth 5 -path "*/Build/Products/*" 2>/dev/null
             exit 1
           fi
 
-          HOST_APP=$(dirname "$(dirname "$EMBEDDED_WATCH_APP")")
-          echo "HOST_APP: $HOST_APP"
-          echo "EMBEDDED_WATCH_APP: $EMBEDDED_WATCH_APP"
+          WATCH_APP="$HOST_APP/Watch/DayEchoWatch.app"
+          echo "HOST_APP:       $HOST_APP"
+          echo "WATCH_APP:      $WATCH_APP"
 
           echo
           echo "=== 2. 宿主 iOS App 关键键值 ==="
@@ -180,80 +180,89 @@ jobs:
 
           echo
           echo "=== 3. 嵌入 Watch App 5 个核心判据键值 ==="
-          for KEY in CFBundleIdentifier WKCompanionAppBundleIdentifier WKApplication WKWatchOnly WKRunsIndependentlyOfCompanionApp; do
-            VAL=$(/usr/libexec/PlistBuddy -c "Print :$KEY" "$EMBEDDED_WATCH_APP/Info.plist" 2>/dev/null || echo "<NOT_SET>")
-            echo " $KEY = $VAL"
-          done
+          if [ -d "$WATCH_APP" ]; then
+            for KEY in CFBundleIdentifier WKCompanionAppBundleIdentifier WKApplication WKWatchOnly WKRunsIndependentlyOfCompanionApp; do
+              VAL=$(/usr/libexec/PlistBuddy -c "Print :$KEY" "$WATCH_APP/Info.plist" 2>/dev/null || echo "<NOT_SET>")
+              echo " $KEY = $VAL"
+            done
+            echo
+            echo "--- watch app 目录结构 ---"
+            find "$WATCH_APP" -maxdepth 2 | sed "s|$WATCH_APP|.|"
+            echo
+            echo "--- watch 二进制架构 ---"
+            lipo -info "$WATCH_APP/DayEchoWatch" 2>&1 || true
+          else
+            echo "❌ Watch/ 目录下没有 DayEchoWatch.app"
+            echo "--- 宿主包实际结构（maxdepth 3）---"
+            find "$HOST_APP" -maxdepth 3 | sed "s|$HOST_APP|.|" | head -40
+          fi
 
           echo
-          echo "=== 4. 检查内层 Watch Extension (若存在) ==="
-          EXT_PLIST=$(find "$EMBEDDED_WATCH_APP" -maxdepth 3 -name "Info.plist" ! -path "$EMBEDDED_WATCH_APP/Info.plist" | head -n 1)
-          if [ -n "$EXT_PLIST" ]; then
-            echo "EXT_PLIST: $EXT_PLIST"
-            echo -n " CFBundleIdentifier = "
-            /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$EXT_PLIST" 2>&1 || echo "<NOT_SET>"
-            echo -n " WKAppBundleIdentifier = "
-            /usr/libexec/PlistBuddy -c "Print :WKAppBundleIdentifier" "$EXT_PLIST" 2>&1 || echo "<NOT_SET>"
-            echo -n " NSExtensionPointIdentifier = "
-            /usr/libexec/PlistBuddy -c "Print :NSExtension:NSExtensionPointIdentifier" "$EXT_PLIST" 2>&1 || echo "<NOT_SET>"
-          else
-            echo "无嵌套 Extension plist（单层 Watch App 结构）"
-          fi
+          echo "=== 4. xcodebuild 里的真实校验/嵌入命令 ==="
+          grep -E 'ValidateEmbeddedBinary|embeddedBinaryValidationUtility|ProcessInfoPlistFile.*watchapp|-producttype com.apple.product-type' /tmp/xcb.log 2>/dev/null | head -10 || echo "(无日志文件，见上方 xcodebuild 输出)"
 
       # ---- 6c. Pre-Package 断言：打包前 1 秒拦截层级问题 ----
       #
-      # 不等 xcodebuild -exportArchive 报晦涩的 ValidateEmbeddedBinary 错误。
-      # 直接对着 device build 的产物检查 bundle id 层级与嵌入模式声明。
+      # 不等 xcodebuild 报晦涩的嵌入校验错误，直接对着 device build 的产物断言。
       - name: Pre-Package Assertion (bundle id hierarchy)
         if: always()
         run: |
           set +e
           HOST_APP="$RUNNER_TEMP/DerivedDataDevice/Build/Products/Release-iphoneos/DayEcho.app"
-          WATCH_APP="$HOST_APP/PlugIns/DayEchoWatch.app"
+          WATCH_APP="$HOST_APP/Watch/DayEchoWatch.app"
 
           if [ ! -d "$WATCH_APP" ]; then
-            echo "::error::Pre-Package：找不到 $WATCH_APP"; exit 0
+            echo "::error::Pre-Package：找不到 $WATCH_APP"
+            echo "--- 宿主包实际结构 ---"
+            find "$HOST_APP" -maxdepth 3 | sed "s|$HOST_APP|.|" | head -30
+            exit 0
           fi
 
           HOST_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$HOST_APP/Info.plist" 2>/dev/null)
           WATCH_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$WATCH_APP/Info.plist" 2>/dev/null)
           WK_WATCH_ONLY=$(/usr/libexec/PlistBuddy -c "Print :WKWatchOnly" "$WATCH_APP/Info.plist" 2>/dev/null)
           WK_COMPANION=$(/usr/libexec/PlistBuddy -c "Print :WKCompanionAppBundleIdentifier" "$WATCH_APP/Info.plist" 2>/dev/null)
+          WK_APPLICATION=$(/usr/libexec/PlistBuddy -c "Print :WKApplication" "$WATCH_APP/Info.plist" 2>/dev/null)
 
           echo "HOST_BUNDLE_ID      = $HOST_BUNDLE_ID"
           echo "WATCH_BUNDLE_ID     = $WATCH_BUNDLE_ID"
-          echo "WK_WATCH_ONLY       = ${WK_WATCH_ONLY:-<NOT_SET>}"
           echo "WK_COMPANION        = ${WK_COMPANION:-<NOT_SET>}"
+          echo "WK_APPLICATION      = ${WK_APPLICATION:-<NOT_SET>}"
+          echo "WK_WATCH_ONLY       = ${WK_WATCH_ONLY:-<NOT_SET>}"
 
           FAIL=0
 
           # 校验规则 1：Watch BundleID 必须严格等于 "${HOST_BUNDLE_ID}.watchkitapp"
           EXPECT_WATCH="${HOST_BUNDLE_ID}.watchkitapp"
           if [ "$WATCH_BUNDLE_ID" != "$EXPECT_WATCH" ]; then
-            echo "❌ BundleID 层级校验失败: 期望 $EXPECT_WATCH, 实际 $WATCH_BUNDLE_ID"
-            FAIL=1
+            echo "❌ BundleID 层级校验失败: 期望 $EXPECT_WATCH, 实际 $WATCH_BUNDLE_ID"; FAIL=1
           else
             echo "✅ BundleID 层级正确"
           fi
 
           # 校验规则 2：WKWatchOnly 绝不能为 true / 1
           if [ "$WK_WATCH_ONLY" = "true" ] || [ "$WK_WATCH_ONLY" = "1" ]; then
-            echo "❌ 嵌入模式下禁止声明 WKWatchOnly=true"
-            FAIL=1
+            echo "❌ 嵌入模式下禁止声明 WKWatchOnly=true"; FAIL=1
           else
             echo "✅ 未声明 WKWatchOnly"
           fi
 
           # 校验规则 3：必须反向绑定到宿主 iOS App
           if [ -z "$WK_COMPANION" ] || [ "$WK_COMPANION" != "$HOST_BUNDLE_ID" ]; then
-            echo "❌ WKCompanionAppBundleIdentifier 应等于宿主 $HOST_BUNDLE_ID, 实际 ${WK_COMPANION:-<NOT_SET>}"
-            FAIL=1
+            echo "❌ WKCompanionAppBundleIdentifier 应等于宿主 $HOST_BUNDLE_ID, 实际 ${WK_COMPANION:-<NOT_SET>}"; FAIL=1
           else
             echo "✅ WKCompanionAppBundleIdentifier 正确"
           fi
 
+          # 校验规则 4：现代 SwiftUI watch App 必须有 WKApplication
+          if [ "$WK_APPLICATION" != "YES" ] && [ "$WK_APPLICATION" != "true" ] && [ "$WK_APPLICATION" != "1" ]; then
+            echo "❌ 缺少 WKApplication=YES（现代 SwiftUI watch App 必需标记）"; FAIL=1
+          else
+            echo "✅ WKApplication 存在"
+          fi
+
           if [ "$FAIL" = "1" ]; then
-            echo "::error::Pre-Package 断言失败（不阻断打包，由后续步骤决定是否继续）"
+            echo "::error::Pre-Package 断言失败"
           fi
           exit 0
 
@@ -312,11 +321,18 @@ jobs:
         run: |
           set -e
           APP="$RUNNER_TEMP/DayEcho-device.xcarchive/Products/Applications/DayEcho.app"
-          FOUND=$(find "$APP/PlugIns" -maxdepth 2 -name "DayEchoWatch.app" 2>/dev/null | head -1)
+
+          # ★ 现代单 target watchOS 布局：手表 App 在宿主包的 Watch/ 目录，
+          #   没有 PlugIns/*.appex，也没有 WatchKit 嵌入校验。
+          FOUND=$(find "$APP/Watch" -maxdepth 2 -name "DayEchoWatch.app" 2>/dev/null | head -1)
           if [ -z "$FOUND" ]; then
-            echo "::error::iOS 包里没找到嵌入的 DayEchoWatch.app（PlugIns 为空）"; exit 1
+            echo "::error::iOS 包里没找到嵌入的 DayEchoWatch.app（Watch/ 目录不存在）"
+            echo "--- 实际结构 ---"
+            find "$APP" -maxdepth 3 | sed "s|$APP|.|" | head -40
+            exit 1
           fi
           echo "--- 嵌入的 watch App: $FOUND ---"
+
           WBIN="$FOUND/DayEchoWatch"
           if [ ! -f "$WBIN" ]; then
             echo "::error::watch App 里没有可执行文件"; exit 1
@@ -324,45 +340,41 @@ jobs:
           lipo -info "$WBIN"
           lipo -info "$WBIN" | grep -q 'arm64' || { echo "::error::watch 二进制不是 arm64"; exit 1; }
 
-          # 关键：扩展必须存在
-          APPEX=$(find "$FOUND/PlugIns" -maxdepth 2 -name "*.appex" 2>/dev/null | head -1)
-          if [ -z "$APPEX" ]; then
-            echo "::error::watch App 里没有 WatchKit Extension（.appex）——手表上会点不开"; exit 1
+          # 依附式手表 App 的关键判据
+          WAC=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$FOUND/Info.plist" 2>/dev/null || echo "")
+          WCOMP=$(/usr/libexec/PlistBuddy -c "Print :WKCompanionAppBundleIdentifier" "$FOUND/Info.plist" 2>/dev/null || echo "")
+          WAPP=$(/usr/libexec/PlistBuddy -c "Print :WKApplication" "$FOUND/Info.plist" 2>/dev/null || echo "")
+          WWO=$(/usr/libexec/PlistBuddy -c "Print :WKWatchOnly" "$FOUND/Info.plist" 2>/dev/null || echo "")
+          HOSTID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist" 2>/dev/null || echo "")
+
+          echo "host CFBundleIdentifier               = $HOSTID"
+          echo "watch CFBundleIdentifier              = $WAC"
+          echo "watch WKCompanionAppBundleIdentifier  = $WCOMP"
+          echo "watch WKApplication                   = ${WAPP:-<NOT_SET>}"
+          echo "watch WKWatchOnly                     = ${WWO:-<NOT_SET>}"
+
+          # WKApplication 必须存在（现代 SwiftUI watch App 标记）
+          if [ "$WAPP" != "YES" ] && [ "$WAPP" != "true" ] && [ "$WAPP" != "1" ]; then
+            echo "::error::watch App 缺少 WKApplication=YES（现代 SwiftUI watch App 必需标记）"; exit 1
           fi
 
-          # Extension 的 NSExtensionPointIdentifier 必须是 com.apple.watchkit，
-          # 否则设备上会报 "WatchKit App doesn't contain any WatchKit Extensions"
-          EPI=$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist" 2>/dev/null || echo "")
-          if [ "$EPI" != "com.apple.watchkit" ]; then
-            echo "::error::Extension 的 NSExtensionPointIdentifier 不对（当前='$EPI'，应为 com.apple.watchkit）"; exit 1
-          fi
-          echo "NSExtensionPointIdentifier = $EPI  ✓"
-
-          # WKAppBundleIdentifier 必须等于 Watch App 的 CFBundleIdentifier
-          WKC=$(/usr/libexec/PlistBuddy -c 'Print :WKAppBundleIdentifier' "$APPEX/Info.plist" 2>/dev/null || echo "")
-          WAC=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$FOUND/Info.plist" 2>/dev/null || echo "")
-          echo "WKAppBundleIdentifier = $WKC"
-          echo "watch app CFBundleIdentifier = $WAC"
-          if [ -z "$WKC" ] || [ "$WKC" != "$WAC" ]; then
-            echo "::error::WKAppBundleIdentifier 与 watch app 的 CFBundleIdentifier 不一致"; exit 1
+          # WKCompanionAppBundleIdentifier 必须等于宿主
+          if [ -z "$WCOMP" ] || [ "$WCOMP" != "$HOSTID" ]; then
+            echo "::error::WKCompanionAppBundleIdentifier 应等于宿主 $HOSTID, 实际 ${WCOMP:-<NOT_SET>}"; exit 1
           fi
 
-          # 依附式手表 App 不能声明 WKWatchOnly=true
-          # （那表示独立手表 App，与嵌入 iOS App 冲突）
-          WWO=$(/usr/libexec/PlistBuddy -c 'Print :WKWatchOnly' "$FOUND/Info.plist" 2>/dev/null || echo "")
+          # 不能声明 WKWatchOnly=true
           if [ "$WWO" = "true" ] || [ "$WWO" = "1" ]; then
             echo "::error::watch app 声明了 WKWatchOnly=true，与嵌入 iOS App 冲突"; exit 1
           fi
-          echo "--- watch App 结构 ---"
-          find "$FOUND" -maxdepth 3 -name "*.appex" -o -maxdepth 2 -name "Info.plist" | sed "s|$RUNNER_TEMP||" 
-          echo "--- 嵌入的 Extension: $APPEX ---"
-          EBIN="$APPEX/DayEchoWatchExtension"
-          if [ ! -f "$EBIN" ]; then
-            echo "::error::Extension 里没有可执行文件"; exit 1
+
+          # bundle id 层级
+          EXPECT_WATCH="${HOSTID}.watchkitapp"
+          if [ "$WAC" != "$EXPECT_WATCH" ]; then
+            echo "::error::watch bundle id 应为 $EXPECT_WATCH, 实际 $WAC"; exit 1
           fi
-          lipo -info "$EBIN"
-          lipo -info "$EBIN" | grep -q 'arm64' || { echo "::error::Extension 二进制不是 arm64"; exit 1; }
-          echo "✅ watchOS App 与 Extension 均已正确嵌入且为 arm64"
+
+          echo "✅ watchOS App 已正确嵌入宿主包且判据全部正确"
 
       # ---- 10. 收集产物 ----
       - name: Collect artifacts
