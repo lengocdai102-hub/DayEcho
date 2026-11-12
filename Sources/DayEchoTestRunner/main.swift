@@ -34,6 +34,16 @@ try initialStateAndRetentionTests()
 try coldStartRecoveryTests()
 try tailSealAndReentrancyTests()
 
+// ★ 第五组：真实传输通道的 ACK 语义 ★
+//
+// 这一组是**第 4 轮 CI 失败后补的** ——
+// 在此之前，deliversAcknowledgement = false 的路径一行都没被测到，
+// 所以 66 条测试全绿却编译不过（SegmentTransferResult 缺 .delivered case）。
+//
+// 它钉死的不变量：没有手机端 ACK，段就绝不能从队列里消失。
+print("\n[真实传输通道 ACK 语义]")
+try await transferSemanticsTests()
+
 print("\n─────────────────────────────")
 print("通过 \(Suite.passed) / 失败 \(Suite.failed.count)")
 if !Suite.failed.isEmpty {

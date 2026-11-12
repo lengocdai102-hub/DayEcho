@@ -134,7 +134,11 @@ public final class WatchTransferChannel: NSObject, SegmentTransport, @unchecked 
             // 手机 App 被删 / 被拒绝 / 文件损坏，didFinish 一样是成功的。
             // 所以这里只能流转到 `.transferred`（等待 ACK），
             // 真正流转到 `.verified` 要等手机端回传 ACK。
-            continuation.resume(returning: .transferred)
+            //
+            // ★ 返回 .delivered 而不是 .verified ★
+            // .delivered 的 isAcceptable == false ⇒ 段**留在队列里**，
+            // 等手机端 ACK 到了才 markVerified 移除。
+            continuation.resume(returning: .delivered)
         }
     }
 

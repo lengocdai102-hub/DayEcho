@@ -6,6 +6,14 @@ import Foundation
 public enum SegmentTransferResult: Sendable, Equatable {
     /// 收到且 SHA-256 校验通过 —— 这段可以安全从 Watch 队列移除
     case verified
+    /// ★ 已交给系统传输队列，但手机端还没确认 ★
+    ///
+    /// 真实 `WCSession.transferFile` 的 `didFinish` 只说明文件进了系统队列，
+    /// **不代表**手机端收到，更不代表校验通过。
+    /// 所以这一档**不能**把段从队列里移除 —— 必须等手机端回传 ACK。
+    ///
+    /// 这个 case 只在 `SegmentTransport.deliversAcknowledgement == false` 时出现。
+    case delivered
     /// 收到了但哈希不符 —— 内容损坏，**保留在队列里等重试**
     case hashMismatch(expected: String, actual: String)
     /// 收到了但长度不符 —— 被截断，保留重试
@@ -14,12 +22,21 @@ public enum SegmentTransferResult: Sendable, Equatable {
     case rejected(String)
 
     /// 是否可以安全移除
+    ///
+    /// ★ `.delivered` 的 isAcceptable 是 false ★
+    /// —— 「已交给系统传输队列」**不等于**「手机端已验证」。
+    /// 若这里返回 true，段会在文件刚进队列时就被移除，
+    /// 手机端若最终没收到，这段录音就永久消失。
     public var isAcceptable: Bool { self == .verified }
+
+    /// 是否表示「已投递但尚未确认」
+    public var isDeliveredOnly: Bool { self == .delivered }
 
     /// 失败原因（用于写入队列的 lastError）
     public var failureReason: String? {
         switch self {
         case .verified: return nil
+        case .delivered: return nil
         case .hashMismatch(let e, let a):
             return "校验不符（期望 \(e.prefix(12))…，实际 \(a.prefix(12))…）"
         case .truncated(let e, let a):
@@ -119,6 +136,8 @@ public final class TransferCoordinator: @unchecked Sendable {
     public struct Report: Sendable, Equatable {
         public var sent = 0
         public var verified = 0
+        /// 已交给系统传输队列、**尚未**收到手机端 ACK 的段数
+        public var delivered = 0
         public var failed = 0
         public var skippedMissing = 0
 
@@ -183,16 +202,19 @@ public final class TransferCoordinator: @unchecked Sendable {
             do {
                 let result = try await transport.send(payload)
                 if result.isAcceptable {
-                    if transport.deliversAcknowledgement {
-                        // 假传输通道已模拟了手机端确认 —— 直接算安全
-                        queue.markVerified(entry.id)
-                    } else {
-                        // ★ 只到 `.transferred` —— 还不算安全 ★
-                        // 手机端的 ACK 还没回来。此刻段仍留在队列里，
-                        // 保留策略也不碰它（只清 .verified）。
-                        queue.markTransferred(entry.id)
-                    }
+                    // 通道自带 ACK（测试用的假通道）—— 手机端已确认，直接移除
+                    queue.markVerified(entry.id)
                     report.verified += 1
+                } else if result.isDeliveredOnly {
+                    // ★ 只到 `.transferred` —— 还不算安全 ★
+                    //
+                    // 文件已交给系统传输队列，手机端的 ACK 还没回来。
+                    // 此刻段仍留在队列里，保留策略也不碰它（只清 .verified）。
+                    //
+                    // ★ 这一档必须单独处理，不能落进 markFailed ★
+                    // —— 投递成功不是失败，不该记错误、不该走重试路径。
+                    queue.markTransferred(entry.id)
+                    report.delivered += 1
                 } else {
                     queue.markFailed(entry.id, error: result.failureReason ?? "未知失败")
                     report.failed += 1
