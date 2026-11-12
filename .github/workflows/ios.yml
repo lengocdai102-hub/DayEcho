@@ -272,6 +272,13 @@ jobs:
           if [ -z "$WKC" ] || [ "$WKC" != "$WAC" ]; then
             echo "::error::WKAppBundleIdentifier 与 watch app 的 CFBundleIdentifier 不一致"; exit 1
           fi
+
+          # 依附式手表 App 不能声明 WKWatchOnly=true
+          # （那表示独立手表 App，与嵌入 iOS App 冲突）
+          WWO=$(/usr/libexec/PlistBuddy -c 'Print :WKWatchOnly' "$FOUND/Info.plist" 2>/dev/null || echo "")
+          if [ "$WWO" = "true" ] || [ "$WWO" = "1" ]; then
+            echo "::error::watch app 声明了 WKWatchOnly=true，与嵌入 iOS App 冲突"; exit 1
+          fi
           echo "--- watch App 结构 ---"
           find "$FOUND" -maxdepth 3 -name "*.appex" -o -maxdepth 2 -name "Info.plist" | sed "s|$RUNNER_TEMP||" 
           echo "--- 嵌入的 Extension: $APPEX ---"

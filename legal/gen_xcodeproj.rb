@@ -193,7 +193,14 @@ watch_target.build_configurations.each do |cfg|
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
   s['INFOPLIST_KEY_WKCompanionAppBundleIdentifier'] = BUNDLE_ID
-  s['INFOPLIST_KEY_WKWatchOnly'] = 'YES'
+  # ★ 绝不能设 WKWatchOnly=YES。
+  # WKWatchOnly=true 表示「独立手表 App」（不依附 iPhone App），
+  # 但我们把 watch app 嵌进了 iOS App 的 PlugIns/，
+  # 两者自相矛盾。Xcode 的 ValidateEmbeddedBinary 会因此报：
+  #   error: WatchKit App doesn't contain any WatchKit Extensions whose
+  #   WKAppBundleIdentifier matches "...".
+  # 依附式手表 App 不设这个键。
+  s.delete('INFOPLIST_KEY_WKWatchOnly')
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
