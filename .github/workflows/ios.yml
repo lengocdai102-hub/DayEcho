@@ -209,6 +209,16 @@ jobs:
           if [ -z "$APPEX" ]; then
             echo "::error::watch App 里没有 WatchKit Extension（.appex）——手表上会点不开"; exit 1
           fi
+
+          # Extension 的 NSExtensionPointIdentifier 必须是 com.apple.watchkit，
+          # 否则设备上会报 "WatchKit App doesn't contain any WatchKit Extensions"
+          EPI=$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist" 2>/dev/null || echo "")
+          if [ "$EPI" != "com.apple.watchkit" ]; then
+            echo "::error::Extension 的 NSExtensionPointIdentifier 不对（当前='$EPI'，应为 com.apple.watchkit）"; exit 1
+          fi
+          echo "NSExtensionPointIdentifier = $EPI  ✓"
+          echo "--- watch App 结构 ---"
+          find "$FOUND" -maxdepth 3 -name "*.appex" -o -maxdepth 2 -name "Info.plist" | sed "s|$RUNNER_TEMP||" 
           echo "--- 嵌入的 Extension: $APPEX ---"
           EBIN="$APPEX/DayEchoWatchExtension"
           if [ ! -f "$EBIN" ]; then

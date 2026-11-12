@@ -133,6 +133,15 @@ watch_ext.build_configurations.each do |cfg|
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
   s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] =
     'DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的设备上。'
+  # ★ WatchKit Extension 的 Info.plist 必须是这两条，否则 Xcode 报
+  #   "WatchKit App doesn't contain any WatchKit Extensions.
+  #    Verify that the value of NSExtensionPointIdentifier in your
+  #    WatchKit Extension's Info.plist is set to com.apple.watchkit."
+  s['INFOPLIST_KEY_NSExtensionPointIdentifier'] = 'com.apple.watchkit'
+  # 注意：不设 NSExtensionPrincipalClass。
+  # 我们用的是 SwiftUI 生命周期（@main struct DayEchoWatchApp: App），
+  # 入口由 SwiftUI 运行时解析，不需要 principal class；
+  # 设了反而会去找一个不存在的 ExtensionDelegate 类。
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
@@ -192,6 +201,14 @@ end
 
 # 壳依赖 Extension —— 缺这个 Xcode 不会把扩展塞进 .app
 watch_target.add_dependency(watch_ext)
+
+# ★ watch2_app 必须把 Extension 嵌进自己的 PlugIns/ 目录。
+# 只有 add_dependency 是不够的 —— 那样编译能过，
+# 但产出的 .app 里没有 PlugIns/*.appex，
+# 设备上会报 "WatchKit App doesn't contain any WatchKit Extensions"。
+watch_ext_embed = watch_target.new_copy_files_build_phase('Embed App Extensions')
+watch_ext_embed.symbol_dst_subfolder_spec = :plug_ins
+watch_ext_embed.add_file_reference(watch_ext.product_reference)
 
 # ============================================================
 # 4. iOS App 依赖与嵌入
