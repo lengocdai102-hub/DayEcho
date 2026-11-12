@@ -168,6 +168,21 @@ jobs:
             /usr/libexec/PlistBuddy -c 'Print' "$pl/Info.plist" 2>&1 | head -40
           done
 
+          echo
+          echo "===== Watch App 自己的 Info.plist（关键）====="
+          WAPP=$(find "$RUNNER_TEMP/DerivedDataDevice/Build/Products" -name "DayEchoWatch.app" -type d 2>/dev/null | head -1)
+          if [ -n "$WAPP" ]; then
+            echo "--- $WAPP ---"
+            /usr/libexec/PlistBuddy -c 'Print' "$WAPP/Info.plist" 2>&1 | head -40
+            echo "--- 关键键 ---"
+            for k in CFBundleIdentifier WKCompanionAppBundleIdentifier WKWatchOnly WKAppBundleIdentifier CFBundlePackageType; do
+              echo -n "$k = "
+              /usr/libexec/PlistBuddy -c "Print :$k" "$WAPP/Info.plist" 2>/dev/null || echo "(缺)"
+            done
+          else
+            echo "没找到 DayEchoWatch.app"
+          fi
+
       # ---- 7. 真机归档 + 打出 unsigned .ipa ----
       - name: Archive for device and package unsigned .ipa
         run: |
