@@ -137,6 +137,37 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             build
 
+      # ---- 6b. 诊断：dump watch 产物结构 ----
+      # 失败时最需要知道的事实：.appex 到底在不在、被放到了哪。
+      - name: Dump watch bundle structure
+        if: always()
+        run: |
+          set +e
+          APP="$RUNNER_TEMP/DerivedDataDevice/Build/Products/Release-iphoneos/DayEcho.app"
+          echo "===== DayEcho.app 结构 ====="
+          find "$APP" -maxdepth 4 | sed "s|$APP|.|" | head -60
+          echo
+          echo "===== PlugIns 下的 watch app ====="
+          WATCH="$APP/PlugIns/DayEchoWatch.app"
+          if [ -d "$WATCH" ]; then
+            find "$WATCH" -maxdepth 3 | sed "s|$WATCH|.|" | head -40
+            echo "--- watch app 自己的 PlugIns ---"
+            ls -la "$WATCH/PlugIns" 2>&1
+          else
+            echo "没有 $WATCH"
+            echo "--- PlugIns 实际内容 ---"
+            ls -la "$APP/PlugIns" 2>&1
+          fi
+          echo
+          echo "===== Release-iphoneos 全部产物 ====="
+          find "$RUNNER_TEMP/DerivedDataDevice/Build/Products" -maxdepth 3 -name "*.appex" -o -maxdepth 3 -name "*.app" | head -20
+          echo
+          echo "===== extension Info.plist（若存在）====="
+          for pl in $(find "$RUNNER_TEMP/DerivedDataDevice/Build/Products" -name "DayEchoWatchExtension.appex" -type d 2>/dev/null); do
+            echo "--- $pl ---"
+            /usr/libexec/PlistBuddy -c 'Print' "$pl/Info.plist" 2>&1 | head -40
+          done
+
       # ---- 7. 真机归档 + 打出 unsigned .ipa ----
       - name: Archive for device and package unsigned .ipa
         run: |
