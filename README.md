@@ -171,6 +171,36 @@ UI 与 Watch 录音链路为最小可用实现，尚未在真机长时间录音�
 - 本地转写（Speech framework）尚未接入 —— Auday 的转写与总结也是其差评重灾区，
   这块要单独设计（是否本地、是否允许失败、失败时如何提示）。
 - 未做 App Store 上架准备：截图、描述、关键词、审核材料。
+- **真机设备构建目前未通过 CI**：watch 嵌入校验还差最后一个判据，
+  unsigned `.ipa` 尚未产出。模拟器构建已全绿。
+  完整根因分析、逐条证据链与修复记录见 **[`docs/BUILD-BLOCKERS.md`](docs/BUILD-BLOCKERS.md)**。
+
+---
+
+## 构建踩坑记录（浓缩版）
+
+完整版见 [`docs/BUILD-BLOCKERS.md`](docs/BUILD-BLOCKERS.md)。三条最值得记住的：
+
+**① watchOS 设备是 32 位指针架构（`arm64_32`），`Int` 只有 2 GiB 上限。**
+本机 macOS、iOS 模拟器、iOS 真机全部测不出来 —— 只有 watchOS 真机 Release 构建会炸。
+所以 8 GiB 这类默认值必须用 `Int64`：
+```swift
+// ❌ watchOS 真机必炸：integer literal '8589934592' overflows when stored into 'Int'
+public var maxTotalBytes: Int? = 8 * 1024 * 1024 * 1024
+// ✅
+public var maxTotalBytes: Int64? = 8_589_934_592
+```
+注意 `Int(8) * 1024 * 1024 * 1024` **也救不了** —— 后续纯字面量仍按 32 位推断。
+
+**② `INFOPLIST_KEY_*` 无法表达嵌套字典。**
+`INFOPLIST_KEY_NSExtensionPointIdentifier` 生成的是顶层键，Xcode 要求它嵌在 `NSExtension` 字典里，
+只能改用真实 plist 文件（`legal/WatchExtension-Info.plist`）。
+
+**③ watch app 嵌入 iOS App 时不能声明 `WKWatchOnly=true`。**
+那表示「独立手表 App」，与嵌入 `PlugIns/` 互斥，Xcode 会认为没有可匹配的 extension。
+
+为防同类问题复发，CI 里加了两道本地审计（跨模块 public API 可见性、32 位常量溢出），
+两道都做过破坏性验证；产物校验也加了对应断言防回归。
 
 ---
 
