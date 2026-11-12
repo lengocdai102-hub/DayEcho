@@ -42,7 +42,26 @@ public final class WatchTransferChannel: NSObject, SegmentTransport, @unchecked 
     /// ★ 必须维护这张表 ★
     /// `didFinish transfer:error:` 回调只给 WCSessionFileTransfer 对象，
     /// 不给我们的 entryID。没有这张反查表就无法知道是哪一段完成了。
+    ///
+    /// ★ 保留这张表作为兜底 ★
+    /// 主索引是 `fileURLToEntry`（见下），这张表只在极端情况下用得上
+    /// —— 理论上 `transfer.file` 不会为 nil，但不为 nil 就查不到。
     private var transferToEntry: [ObjectIdentifier: UUID] = [:]
+
+    /// 段文件 URL → entryID
+    /// ★ 主反查表 ★
+    ///
+    /// 为什么用 URL 而不是 `ObjectIdentifier(transfer)`：
+    /// `transferFile` 返回的 `WCSessionFileTransfer` 对象是**调用之后**才有的，
+    /// 只能在调用之后登记。若 `didFinish` 回调极快到达（在登记之前），
+    /// 反查就落空 —— continuation 永不 resume，传输永远挂着，
+    /// 表现就是「录音一直卡在待同步」（Auday 最出名的差评场景）。
+    ///
+    /// 而文件 URL 是**我们自己算出来的**，`transferFile` 调用之前就知道，
+    /// 可以提前登记 ⇒ 这个竞态窗口彻底消失。
+    ///
+    /// 附带好处：`URL` 是 `Sendable`，跨并发域传递天然安全。
+    private var fileURLToEntry: [URL: UUID] = [:]
     private let transferLock = NSLock()
 
     public init(fileRoot: URL) {
@@ -101,7 +120,19 @@ public final class WatchTransferChannel: NSObject, SegmentTransport, @unchecked 
             waiters[entryID] = continuation
             waiterLock.unlock()
 
+            // ★ 提前登记 fileURL → entryID ★
+            //
+            // 必须在 transferFile 调用**之前**登记：
+            // 若等 transferFile 返回后才登记，而 didFinish 回调在登记之前到达，
+            // 反查会落空 —— continuation 永不 resume，传输永远挂着。
+            // fileURL 是我们自己算的，调用之前就有，所以这个窗口可以彻底消除。
+            transferLock.lock()
+            fileURLToEntry[fileURL] = entryID
+            transferLock.unlock()
+
             let transfer = WCSession.default.transferFile(fileURL, metadata: metadata)
+
+            // 兜底索引（理论上用不上，但留着不吃亏）
             transferLock.lock()
             transferToEntry[ObjectIdentifier(transfer)] = entryID
             transferLock.unlock()
@@ -111,10 +142,41 @@ public final class WatchTransferChannel: NSObject, SegmentTransport, @unchecked 
     // MARK: WCSessionDelegate 回调入口
 
     /// `session(_:fileTransfer:didFinish:error:)` 的处理入口。
+    ///
+    /// ★ 这里收的是 `ObjectIdentifier` 而不是 `WCSessionFileTransfer` ★
+    ///
+    /// 原因：`WCSessionFileTransfer` 是 **non-Sendable** 类型。
+    /// 在 `nonisolated` 的 WCSessionDelegate 回调里把它传进
+    /// `Task { @MainActor in ... }` 闭包，Swift 6 的并发检查会直接报错：
+    ///
+    /// ```
+    /// error: sending 'didFinish' risks causing data races
+    /// note: task-isolated 'didFinish' is captured by a main actor-isolated closure.
+    /// ```
+    ///
+    /// 而 `transfer` 在这里**只有一个用途** —— 算 `ObjectIdentifier` 当反查表的 key。
+    /// `ObjectIdentifier` 是 Sendable，所以在 nonisolated 上下文里先算好再传进来，
+    /// 既绕开了竞争，又不改变任何语义。
+    ///
+    /// 本方法内部全是 `NSLock` 保护的状态访问，**不需要主线程**，
+    /// 所以可以由 delegate 回调直接同步调用。
+    ///
+    /// - Parameter transferID: `WCSessionFileTransfer` 的对象标识
     /// - Parameter error: nil 表示传输成功；非 nil 表示失败（保留段，等重试）
-    public func handleTransferFinished(transfer: WCSessionFileTransfer, error: Error?) {
+    public func handleTransferFinished(transferID: ObjectIdentifier,
+                                       fileURL: URL?,
+                                       error: Error?) {
         transferLock.lock()
-        let entryID = transferToEntry.removeValue(forKey: ObjectIdentifier(transfer))
+        var entryID = fileURL.flatMap { fileURLToEntry.removeValue(forKey: $0) }
+        if entryID == nil {
+            // 兜底：用 transfer 对象身份查
+            entryID = transferToEntry.removeValue(forKey: transferID)
+        }
+        // 无论哪条路查到了，都把另一张表的残留清掉，避免泄漏
+        if let entryID {
+            fileURLToEntry = fileURLToEntry.filter { $0.value != entryID }
+            transferToEntry = transferToEntry.filter { $0.value != entryID }
+        }
         transferLock.unlock()
 
         guard let entryID else { return }

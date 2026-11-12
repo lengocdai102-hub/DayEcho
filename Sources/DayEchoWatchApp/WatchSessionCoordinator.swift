@@ -154,13 +154,60 @@ extension WatchSessionCoordinator: WCSessionDelegate {
     }
 
     /// ★ 传输完成回调 ★
-    /// 无 error → 手机端已确认收到并校验通过 → 从 Watch 队列移除这一段
+    /// 无 error → 只代表文件已交给系统传输队列，**段留在队列等手机端 ACK**
     /// 有 error → 保留，等下一轮重传（绝不丢）
+    ///
+    /// ★ 为什么这里没有 `Task { @MainActor in ... }` ★
+    ///
+    /// 原来写成 `Task { @MainActor in
+    ///     WatchRecorder.shared.handleTransferFinished(didFinish, error: error)
+    /// }`，Swift 6 的并发检查直接报错：
+    ///
+    /// ```
+    /// error: sending 'didFinish' risks causing data races
+    /// note: task-isolated 'didFinish' is captured by a main actor-isolated closure.
+    /// ```
+    ///
+    /// 因为 `WCSessionFileTransfer` 是 **non-Sendable** 类型，
+    /// 从 `nonisolated` 回调捕获进主线程闭包 ⇒ 数据竞争。
+    ///
+    /// ★ 正确解法 ★
+    ///
+    /// `transfer` 在这里**只有一个用途** —— 算 `ObjectIdentifier` 当反查表 key。
+    /// 所以在 nonisolated 上下文里先把 ID 算好：
+    ///
+    ///   - `ObjectIdentifier` 是 **Sendable**，传进主线程闭包完全安全；
+    ///   - 通道内部的状态访问全由 `NSLock` 保护，**本来就不需要主线程**，
+    ///     所以传输状态流转直接在当前上下文同步完成，
+    ///     不必绕一圈 `Task` —— 少一次调度，也少一个「传输还没登记完就回调了」的窗口。
+    ///
+    /// 只有 UI 状态（待传计数、错误提示）需要主线程，那部分单独跳。
     nonisolated func session(_ session: WCSession,
                              fileTransfer didFinish: WCSessionFileTransfer,
                              error: Error?) {
+        // ★ 在 nonisolated 上下文算好 ID（ObjectIdentifier 是 Sendable）★
+        let transferID = ObjectIdentifier(didFinish)
+
+        // ★ 也要取出 transfer.file（URL 是 Sendable）★
+        //
+        // URL 是反查表的**主键** —— send() 里在调用 transferFile 之前就登记了
+        // `fileURL → entryID`，所以回调一到达就能查到对应段，
+        // 不存在「登记还没做完回调就到了」的竞态。
+        let fileURL = didFinish.file
+
+        // 传输状态流转：同步完成，通道内部有 NSLock 保护
+        //
+        // ★ 通道走全局单例 ★
+        // —— 它不受 @MainActor 隔离，nonisolated 回调可直接访问，
+        // 且和 WatchRecorder 用的是**同一个**实例（传输回调才对得上号）。
+        TransferChannelHolder.shared.current.handleTransferFinished(
+            transferID: transferID, fileURL: fileURL, error: error)
+
+        // UI 状态刷新：单独跳主线程
+        let errorDescription = error?.localizedDescription
         Task { @MainActor in
-            WatchRecorder.shared.handleTransferFinished(didFinish, error: error)
+            WatchRecorder.shared.handleTransferFinishedUI(
+                errorDescription: errorDescription)
         }
     }
 

@@ -5,7 +5,43 @@ import WatchConnectivity
 import AVFoundation
 import DayEchoKit
 
-// MARK: - 录音会话协调器
+// MARK: - 传输通道全局单例
+//
+// ★ 为什么单独抽出来 ★
+//
+// 传输通道要同时被两个角色访问：
+//   - `WatchRecorder`（@MainActor）：发起传输、跑 `TransferCoordinator`
+//   - `WatchSessionCoordinator`（@MainActor，但 delegate 回调是 nonisolated）：
+//     接收 `didFinish` 回调，把传输结果交回队列
+//
+// 如果把它挂在 `WatchRecorder` 上，`WatchRecorder` 是 @MainActor 隔离的，
+// 从 nonisolated 的 delegate 回调读它的属性就得再跳一次 `Task { @MainActor }` ——
+// 而 `WCSessionFileTransfer` 是 non-Sendable，跨域传递会被 Swift 6 检查拦下。
+//
+// 抽成独立的 nonisolated 单例后：
+//   - 不受任何 actor 隔离 ⇒ 任意线程可直接访问
+//   - 内部可变状态全由 `NSLock` 保护 ⇒ 本身就是线程安全的
+//   - 两边拿到的是**同一个**实例（传输回调才能对上号）
+//
+// ★ 强引用要求 ★
+//
+// 通道必须被长期强引用。若只在需要传的时候临时创建、传完就释放，
+// WCSession 的回调就找不到对应对象 —— 传输永远完不成，
+// 表现就是「录音一直卡在待同步」（Auday 最出名的差评场景）。
+final class TransferChannelHolder: @unchecked Sendable {
+    static let shared = TransferChannelHolder()
+
+    /// 传输通道。init 时创建，之后不再替换。
+    private let channel: WatchTransferChannel
+
+    private init() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let root = docs.appendingPathComponent("WatchRecordings")
+        channel = WatchTransferChannel(fileRoot: root)
+    }
+
+    var current: WatchTransferChannel { channel }
+}
 
 /// Watch 端录音协调器。
 ///
@@ -45,7 +81,14 @@ final class WatchRecorder: NSObject, ObservableObject {
     private var clock = SegmentClock(sessionStart: Date())
 
     // ★ 传输通道与协调器 ★
-    private var transferChannel: WatchTransferChannel?
+    /// 传输通道。
+    ///
+    /// ★ 走全局单例 `TransferChannelHolder` ★
+    /// —— 它不受任何 actor 隔离，`nonisolated` 的 WCSessionDelegate 回调
+    /// 可以直接访问同一个实例（详见 holder 的注释）。
+    private var transferChannel: WatchTransferChannel {
+        TransferChannelHolder.shared.current
+    }
     private var coordinator: TransferCoordinator?
 
     /// 传输轮次间隔（秒）
@@ -68,12 +111,11 @@ final class WatchRecorder: NSObject, ObservableObject {
         super.init()
         loadQueue()
 
-        // 传输通道：必须被**长期强引用**。
+        // 传输通道：从全局单例取（必须被**长期强引用**）。
         // 如果这里只在需要传的时候临时创建、传完就释放，
         // WCSession 的回调就找不到对应对象，传输永远完不成
         // —— 表现就是「录音一直卡在待同步」。
-        let channel = WatchTransferChannel(fileRoot: watchRoot)
-        transferChannel = channel
+        let channel = transferChannel
 
         let coord = TransferCoordinator(queue: queue, transport: channel) { [weak self] entry in
             guard let self else { return nil }
@@ -389,18 +431,21 @@ final class WatchRecorder: NSObject, ObservableObject {
         }
     }
 
-    /// WCSession 传输完成回调的入口。
+    /// WCSession 传输完成后的 **UI 刷新**部分。
     ///
-    /// - Parameter error: nil = 成功；非 nil = 失败
-    func handleTransferFinished(_ transfer: WCSessionFileTransfer, error: Error?) {
-        transferChannel?.handleTransferFinished(transfer: transfer, error: error)
-
+    /// ★ 传输状态流转不在这里 ★
+    /// —— 它由 `WatchSessionCoordinator` 的 nonisolated 回调直接同步调用
+    /// `WatchTransferChannel`，不经过主线程。
+    /// 这里只负责刷新界面。
+    ///
+    /// - Parameter errorDescription: nil = 成功；非 nil = 失败的描述
+    func handleTransferFinishedUI(errorDescription: String?) {
         // 无论成败都要刷新待传计数
         pendingCount = queue.pendingCount
 
-        if let error {
+        if let errorDescription {
             // 失败：条目已在队列里标记为 failed，下一轮自动重试
-            lastError = "传输失败，将自动重试：\(error.localizedDescription)"
+            lastError = "传输失败，将自动重试：\(errorDescription)"
         }
     }
 
