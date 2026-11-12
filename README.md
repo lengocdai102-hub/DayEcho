@@ -132,13 +132,17 @@ GitHub Actions 在 `macos-15` / `macos-26` 双 runner 上构建：
 
 1. SwiftPM 单元测试
 2. 本地化检查
-3. 生成 Xcode 工程
-4. iOS 模拟器构建
-5. **watchOS 模拟器构建**（watchOS API 限制与 iOS 不同，单独编一遍便于定位）
-6. iOS 真机 arm64 构建
-7. 真机归档 → unsigned `.ipa`
-8. 验证 device 二进制是纯 arm64（不含模拟器架构）
-9. **验证 watchOS App 已正确嵌入 iOS 包**（`PlugIns/`）
+3. 跨模块 public API 可见性审计 + 32 位 `Int` 溢出诊断
+4. 生成 Xcode 工程
+5. **静态防回退断言**：直接检查落盘的 `project.pbxproj` 里 `Embed Watch Content` phase 三判据
+6. iOS 模拟器构建
+7. **watchOS 模拟器构建**（watchOS API 限制与 iOS 不同，单独编一遍便于定位）
+8. iOS 真机 arm64 构建
+9. **拷贝落盘硬断言**：`DayEcho.app/Watch/DayEchoWatch.app` 必须真实存在
+10. 打包前 bundle id 层级断言
+11. 真机归档 → unsigned `.ipa`
+12. 验证 device 二进制是纯 arm64（不含模拟器架构）
+13. **验证 watchOS App 已正确嵌入 iOS 包**（`Watch/`）
 
 > 模拟器架构装不上真机、也传不上 App Store Connect。
 > unsigned `.ipa` 只证明「真机架构下能编译链接通过」，**不能直接安装**。
@@ -171,15 +175,17 @@ UI 与 Watch 录音链路为最小可用实现，尚未在真机长时间录音�
 - 本地转写（Speech framework）尚未接入 —— Auday 的转写与总结也是其差评重灾区，
   这块要单独设计（是否本地、是否允许失败、失败时如何提示）。
 - 未做 App Store 上架准备：截图、描述、关键词、审核材料。
-- **真机设备构建目前未通过 CI**：watch 嵌入校验还差最后一个判据，
-  unsigned `.ipa` 尚未产出。模拟器构建已全绿。
+- ~~真机设备构建目前未通过 CI~~ → **已解除**：CI run `43236911252` 双 runner 全绿，
+  unsigned `.ipa` 已产出（macos-15: 92,468 B / macos-26: 92,537 B）。
+- **但 unsigned `.ipa` 不能直接安装**：需要 Apple Developer 账号 + 证书 + Provisioning Profile
+  走 Xcode 签名流程。本项目**尚未做过真机安装与长时间录音实测**。
   完整根因分析、逐条证据链与修复记录见 **[`docs/BUILD-BLOCKERS.md`](docs/BUILD-BLOCKERS.md)**。
 
 ---
 
 ## 构建踩坑记录（浓缩版）
 
-完整版见 [`docs/BUILD-BLOCKERS.md`](docs/BUILD-BLOCKERS.md)。三条最值得记住的：
+完整版见 [`docs/BUILD-BLOCKERS.md`](docs/BUILD-BLOCKERS.md)。四条最值得记住的：
 
 **① watchOS 设备是 32 位指针架构（`arm64_32`），`Int` 只有 2 GiB 上限。**
 本机 macOS、iOS 模拟器、iOS 真机全部测不出来 —— 只有 watchOS 真机 Release 构建会炸。
@@ -192,12 +198,28 @@ public var maxTotalBytes: Int64? = 8_589_934_592
 ```
 注意 `Int(8) * 1024 * 1024 * 1024` **也救不了** —— 后续纯字面量仍按 32 位推断。
 
-**② `INFOPLIST_KEY_*` 无法表达嵌套字典。**
-`INFOPLIST_KEY_NSExtensionPointIdentifier` 生成的是顶层键，Xcode 要求它嵌在 `NSExtension` 字典里，
-只能改用真实 plist 文件（`legal/WatchExtension-Info.plist`）。
+**② watch 端要用「现代单 target」布局，不是 watchOS 2.0 时代的壳 + extension。**
+旧布局（`watchapp2` 壳 + `watchkit2-extension`）配现代 SwiftUI `@main struct App`，
+Xcode 的 `embeddedBinaryValidationUtility` 不认它是有效 extension，
+报错「doesn't contain any WatchKit Extensions whose WKAppBundleIdentifier matches」。
+现代布局是 watchOS App 自己就是 `com.apple.product-type.application`，直接编源码，**没有 extension target**。
+嵌入路径也随之变成 `DayEcho.app/Watch/DayEchoWatch.app`（不再是 `PlugIns/*.appex`）。
 
-**③ watch app 嵌入 iOS App 时不能声明 `WKWatchOnly=true`。**
-那表示「独立手表 App」，与嵌入 `PlugIns/` 互斥，Xcode 会认为没有可匹配的 extension。
+**③ `PBXCopyFilesBuildPhase` 缺 `dstPath` 会让整个 phase 被静默跳过 —— 最阴的一种。**
+xcodeproj 的 `symbol_dst_subfolder_spec = :products_directory` 只写 `dstSubfolderSpec = 16`，
+**不会补 `dstPath`**。缺了它 Xcode **不报错**，直接把 "Embed Watch Content" 当空操作跳过，
+唯一症状是产出的 `.app` 里没有 `Watch/` 目录：
+
+```ruby
+embed_phase.dst_path = '$(CONTENTS_FOLDER_PATH)/Watch'   # ← 必须手写
+embed_phase.files.each { |bf| bf.settings = { 'ATTRIBUTES' => ['RemoveHeadersOnCopy'] } }
+```
+
+CI 里现在有两条断言防它复发：一条静态查 pbxproj 三判据，
+一条在 device build 后立刻查 `Watch/DayEchoWatch.app` 是否真实落盘。
+
+> 排查这类 Xcode 行为的通用方法：**别猜，直接对照真实工程的 pbxproj**。
+> 公开可查的现代单 target watchOS App 样本：`Finb/Bark`。
 
 为防同类问题复发，CI 里加了两道本地审计（跨模块 public API 可见性、32 位常量溢出），
 两道都做过破坏性验证；产物校验也加了对应断言防回归。
