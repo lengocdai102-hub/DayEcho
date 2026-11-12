@@ -129,19 +129,19 @@ watch_ext.build_configurations.each do |cfg|
   s['TARGETED_DEVICE_FAMILY'] = '4'
   s['SUPPORTED_PLATFORMS'] = 'watchos watchsimulator'
   s['SDKROOT'] = 'watchos'
-  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  # ★ 必须用真实 Info.plist 文件，不能用 GENERATE_INFOPLIST_FILE。
+  #
+  # 根因：INFOPLIST_KEY_NSExtensionPointIdentifier 生成的是「顶层」键
+  #       NSExtensionPointIdentifier，而 Xcode 的 ValidateEmbeddedBinary
+  #       要求它嵌在 NSExtension 字典里。INFOPLIST_KEY_* 无法表达嵌套字典，
+  #       所以必须写一个真的 plist 文件。
+  # 少了这个就报：
+  #   error: WatchKit App doesn't contain any WatchKit Extensions.
+  #   Verify that the value of NSExtensionPointIdentifier in your
+  #   WatchKit Extension's Info.plist is set to com.apple.watchkit.
+  s['GENERATE_INFOPLIST_FILE'] = 'NO'
+  s['INFOPLIST_FILE'] = 'legal/WatchExtension-Info.plist'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
-  s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] =
-    'DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的设备上。'
-  # ★ WatchKit Extension 的 Info.plist 必须是这两条，否则 Xcode 报
-  #   "WatchKit App doesn't contain any WatchKit Extensions.
-  #    Verify that the value of NSExtensionPointIdentifier in your
-  #    WatchKit Extension's Info.plist is set to com.apple.watchkit."
-  s['INFOPLIST_KEY_NSExtensionPointIdentifier'] = 'com.apple.watchkit'
-  # 注意：不设 NSExtensionPrincipalClass。
-  # 我们用的是 SwiftUI 生命周期（@main struct DayEchoWatchApp: App），
-  # 入口由 SwiftUI 运行时解析，不需要 principal class；
-  # 设了反而会去找一个不存在的 ExtensionDelegate 类。
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
