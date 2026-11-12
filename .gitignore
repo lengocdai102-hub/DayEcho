@@ -1,0 +1,18 @@
+# Xcode / SwiftPM
+.build/
+.swiftpm/
+DerivedData/
+*.xcarchive
+*.ipa
+*.dSYM
+
+# 生成的 Xcode 工程（由 legal/gen_xcodeproj.rb 生成，保证可复现）
+*.xcodeproj/
+*.xcworkspace/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

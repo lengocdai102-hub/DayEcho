@@ -1,0 +1,184 @@
+name: iOS + watchOS Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # 不取消正在排队/运行的 run —— macOS runner 排队久，
+  # 后续 push 若取消它会导致永远编译不到。
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    # macos-14 已被 GitHub 下线；arm64 标签在免费账户上排队 90+ 分钟。
+    # 实测（2026-11-12）：Intel macos-15 / macos-26 秒级可用且 success。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+
+    env:
+      # 禁用自动签名：unsigned 构建足以验证编译与测试
+      CODE_SIGN_IDENTITY: ""
+      CODE_SIGNING_REQUIRED: "NO"
+      CODE_SIGNING_ALLOWED: "NO"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      # ---- 1. 单元测试（自研 runner，不依赖 XCTest）----
+      - name: Run unit tests
+        run: swift run DayEchoTestRunner
+
+      # ---- 2. 本地化键一致性检查 ----
+      - name: Check localization keys
+        run: swift run L10nCheck
+
+      # ---- 3. 生成 Xcode 工程 ----
+      # 工程是脚本生成的（不提交 .xcodeproj），保证配置永远可复现。
+      - name: Generate Xcode project
+        run: |
+          sudo gem install xcodeproj --no-document
+          ruby legal/gen_xcodeproj.rb
+          ls -la DayEcho.xcodeproj
+
+      # ---- 4. 编译 iOS App（模拟器架构，验证能编过）----
+      - name: Build iOS app (simulator)
+        run: |
+          xcodebuild \
+            -project DayEcho.xcodeproj \
+            -scheme DayEcho \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      # ---- 5. 编译 watchOS App（模拟器架构）----
+      # Watch target 单独编一遍：watchOS 的 API 限制和 iOS 不同，
+      # 混在 iOS 构建里出错难定位。
+      - name: Build watchOS app (simulator)
+        run: |
+          xcodebuild \
+            -project DayEcho.xcodeproj \
+            -scheme DayEcho \
+            -sdk watchsimulator \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/DerivedDataWatch" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      # ---- 6. 真机架构构建（arm64 device）----
+      # 模拟器架构装不上真机、也传不上 App Store Connect。
+      # 这一路用 -sdk iphoneos 编出 arm64 device 二进制，验证同一套代码
+      # 在真机架构下能编译链接通过。unsigned（无证书无描述文件）。
+      - name: Build for device (arm64, unsigned)
+        run: |
+          xcodebuild \
+            -project DayEcho.xcodeproj \
+            -scheme DayEcho \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/DerivedDataDevice" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      # ---- 7. 真机归档 + 打出 unsigned .ipa ----
+      - name: Archive for device and package unsigned .ipa
+        run: |
+          set -e
+          xcodebuild \
+            -project DayEcho.xcodeproj \
+            -scheme DayEcho \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/DerivedDataDevice" \
+            -archivePath "$RUNNER_TEMP/DayEcho-device.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            archive
+
+          APP="$RUNNER_TEMP/DayEcho-device.xcarchive/Products/Applications/DayEcho.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::device archive 里没找到 DayEcho.app"; exit 1
+          fi
+          rm -rf "$RUNNER_TEMP/ipapkg"
+          mkdir -p "$RUNNER_TEMP/ipapkg/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipapkg/Payload/"
+          cd "$RUNNER_TEMP/ipapkg"
+          zip -qry "$RUNNER_TEMP/DayEcho-unsigned.ipa" Payload
+          echo "--- .ipa 产出 ---"
+          ls -la "$RUNNER_TEMP/DayEcho-unsigned.ipa"
+
+      # ---- 8. 验证真机二进制架构 ----
+      - name: Verify device binary is arm64
+        run: |
+          set -e
+          BIN="$RUNNER_TEMP/DayEcho-device.xcarchive/Products/Applications/DayEcho.app/DayEcho"
+          if [ ! -f "$BIN" ]; then
+            echo "::error::找不到 device 二进制"; exit 1
+          fi
+          echo "--- lipo 架构 ---"
+          lipo -info "$BIN"
+          lipo -info "$BIN" | grep -q 'arm64' || { echo "::error::不是 arm64"; exit 1; }
+          if lipo -info "$BIN" | grep -qiE 'x86_64|i386-simulator'; then
+            echo "::error::device 二进制混入了模拟器架构"; exit 1
+          fi
+          echo "✅ 真机 arm64 二进制确认"
+
+      # ---- 9. 验证 watchOS App 已嵌入 iOS 包 ----
+      # 这是最容易悄悄坏掉的地方：watch target 编过了，但没被
+      # "Embed Watch Content" 阶段塞进 .app，装到手机上会没有手表 App。
+      - name: Verify watchOS app is embedded
+        run: |
+          set -e
+          APP="$RUNNER_TEMP/DayEcho-device.xcarchive/Products/Applications/DayEcho.app"
+          FOUND=$(find "$APP/PlugIns" -maxdepth 2 -name "*.app" 2>/dev/null | head -1)
+          if [ -z "$FOUND" ]; then
+            echo "::error::iOS 包里没找到嵌入的 watchOS App（PlugIns 为空）"; exit 1
+          fi
+          echo "--- 嵌入的 watch App: $FOUND ---"
+          WBIN="$FOUND/DayEchoWatch"
+          if [ ! -f "$WBIN" ]; then
+            echo "::error::watch App 里没有可执行文件"; exit 1
+          fi
+          lipo -info "$WBIN"
+          lipo -info "$WBIN" | grep -q 'arm64' || { echo "::error::watch 二进制不是 arm64"; exit 1; }
+          echo "✅ watchOS App 已正确嵌入且为 arm64"
+
+      # ---- 10. 收集产物 ----
+      - name: Collect artifacts
+        if: always()
+        run: |
+          mkdir -p artifacts
+          for d in "$RUNNER_TEMP/DayEcho-device.xcarchive" "$RUNNER_TEMP/DerivedData/Build/Products" "$RUNNER_TEMP/DerivedDataWatch/Build/Products"; do
+            [ -d "$d" ] && cp -R "$d" artifacts/ 2>/dev/null || true
+          done
+          [ -f "$RUNNER_TEMP/DayEcho-unsigned.ipa" ] && cp "$RUNNER_TEMP/DayEcho-unsigned.ipa" artifacts/ 2>/dev/null || true
+          ls -la artifacts/
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: DayEcho-build-${{ matrix.os }}
+          path: artifacts/
+          retention-days: 7

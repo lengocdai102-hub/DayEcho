@@ -1,0 +1,18 @@
+/* DayEcho English localization */
+
+"备份体检" = "Backup Check";
+"录音时间线" = "Recording Timeline";
+"导出与备份" = "Export All Recordings";
+"检查" = "Check";
+"数据完整" = "Data Intact";
+"需要处理" = "Needs Attention";
+"暂无录音" = "No Recordings";
+"录音段数" = "Segments";
+"占用空间" = "Disk Usage";
+"缺失文件" = "Missing Files";
+"校验不符" = "Checksum Mismatch";
+"序列缺口" = "Sequence Gaps";
+"分享导出包" = "Share Export";
+"导出全部录音" = "Export All Recordings";
+"段" = "segments";
+"标记" = "marks";

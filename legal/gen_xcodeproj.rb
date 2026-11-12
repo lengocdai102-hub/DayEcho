@@ -1,0 +1,219 @@
+#!/usr/bin/env ruby
+# 生成 DayEcho 的 Xcode 工程（iOS App + watchOS App + Kit framework）。
+# 用法：ruby legal/gen_xcodeproj.rb
+#
+# 关键点（都是踩过的坑）：
+#   1. Kit 必须是真正的 framework target —— 混编进 App 会报
+#      "no such module 'DayEchoKit'"，而 SwiftPM 全绿完全掩盖这个问题。
+#   2. watchOS App 必须嵌入在 iOS App 里（"Embed Watch Content"），
+#      且 watchOS target 是 iOS target 的依赖。
+#   3. lproj 必须用 PBXVariantGroup，否则本地化整个失效。
+#   4. knownRegions 不登记的 lproj，Xcode 不认这个语言。
+require 'xcodeproj'
+require 'fileutils'
+
+ROOT = File.expand_path(File.join(__dir__, '..'))
+PROJ_PATH = File.join(ROOT, 'DayEcho.xcodeproj')
+
+FileUtils.rm_rf(PROJ_PATH)
+project = Xcodeproj::Project.new(PROJ_PATH)
+
+IOS_MIN = '17.0'
+WATCH_MIN = '10.0'
+BUNDLE_ID = 'com.dayecho.app'
+WATCH_BUNDLE_ID = 'com.dayecho.app.watchkitapp'
+
+# ============================================================
+# 1. iOS App target
+# ============================================================
+ios_target = project.new_target(:application, 'DayEcho', :ios, IOS_MIN)
+
+# ============================================================
+# 2. Kit framework target
+# ============================================================
+kit_target = project.new_target(:framework, 'DayEchoKit', :ios, IOS_MIN)
+kit_target.build_configurations.each do |cfg|
+  s = cfg.build_settings
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.dayecho.kit'
+  s['PRODUCT_NAME'] = 'DayEchoKit'
+  s['MARKETING_VERSION'] = '1.0.0'
+  s['CURRENT_PROJECT_VERSION'] = '1'
+  s['SWIFT_VERSION'] = '6.0'
+  s['IPHONEOS_DEPLOYMENT_TARGET'] = IOS_MIN
+  s['DEFINES_MODULE'] = 'YES'
+  s['SKIP_INSTALL'] = 'YES'
+  s['BUILD_LIBRARY_FOR_DISTRIBUTION'] = 'NO'
+  s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
+  s['CODE_SIGNING_ALLOWED'] = 'NO'
+  s['CODE_SIGNING_REQUIRED'] = 'NO'
+  s['CODE_SIGN_IDENTITY'] = ''
+  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  s['APPLICATION_EXTENSION_API_ONLY'] = 'NO'
+  # Kit 用到的框架
+  s['FRAMEWORK_SEARCH_PATHS'] = '$(inherited)'
+end
+
+# Kit 源码
+kit_files = %w[
+  Sources/DayEchoKit/Models.swift
+  Sources/DayEchoKit/RecordingStore.swift
+  Sources/DayEchoKit/Transfer.swift
+]
+kit_group = project.new_group('DayEchoKit', 'Sources/DayEchoKit')
+kit_files.each do |f|
+  path = File.join(ROOT, f)
+  next unless File.exist?(path)
+  ref = kit_group.new_reference(File.basename(f))
+  kit_target.add_file_references([ref])
+end
+
+# ============================================================
+# 3. watchOS App target
+# ============================================================
+watch_target = project.new_target(:application, 'DayEchoWatch', :watchos, WATCH_MIN)
+watch_target.build_configurations.each do |cfg|
+  s = cfg.build_settings
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = WATCH_BUNDLE_ID
+  s['PRODUCT_NAME'] = 'DayEchoWatch'
+  s['MARKETING_VERSION'] = '1.0.0'
+  s['CURRENT_PROJECT_VERSION'] = '1'
+  s['SWIFT_VERSION'] = '6.0'
+  s['WATCHOS_DEPLOYMENT_TARGET'] = WATCH_MIN
+  s['TARGETED_DEVICE_FAMILY'] = '4'      # Apple Watch
+  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  s['INFOPLIST_KEY_WKCompanionAppBundleIdentifier'] = BUNDLE_ID
+  s['INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp'] = 'YES'
+  s['CODE_SIGNING_ALLOWED'] = 'NO'
+  s['CODE_SIGNING_REQUIRED'] = 'NO'
+  s['CODE_SIGN_IDENTITY'] = ''
+  s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
+  s['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
+end
+
+# watchOS App 依赖 Kit
+watch_target.add_dependency(kit_target)
+watch_target.frameworks_build_phase.add_file_reference(kit_target.product_reference)
+
+watch_files = %w[
+  Sources/DayEchoWatchApp/WatchApp.swift
+]
+watch_group = project.new_group('DayEchoWatchApp', 'Sources/DayEchoWatchApp')
+watch_files.each do |f|
+  path = File.join(ROOT, f)
+  next unless File.exist?(path)
+  ref = watch_group.new_reference(File.basename(f))
+  watch_target.add_file_references([ref])
+end
+
+# watchOS 的本地化
+watch_lproj_group = project.new_group('WatchLocalization', 'Sources/DayEchoWatchApp/WatchResources')
+%w[en zh-Hans].each do |lang|
+  lproj_path = File.join(ROOT, "Sources/DayEchoWatchApp/Resources/#{lang}.lproj")
+  next unless File.directory?(lproj_path)
+  vg = watch_lproj_group.new_variant_group("#{lang}.lproj")
+  vg.new_reference(File.join(lproj_path, 'Localizable.strings'))
+  watch_target.add_resources([vg])
+end
+
+# ============================================================
+# 4. iOS App 依赖与嵌入
+# ============================================================
+ios_target.add_dependency(kit_target)
+ios_target.frameworks_build_phase.add_file_reference(kit_target.product_reference)
+
+# iOS App 依赖 watchOS App
+ios_target.add_dependency(watch_target)
+# "Embed Watch Content" build phase —— 缺了这个 .app 里不会带手表 App
+embed_phase = ios_target.new_copy_files_build_phase('Embed Watch Content')
+embed_phase.symbol_dst_subfolder_spec = :plug_ins
+embed_phase.add_file_reference(watch_target.product_reference)
+
+app_files = %w[
+  Sources/DayEchoApp/DayEchoApp.swift
+  Sources/DayEchoApp/ContentView.swift
+]
+app_group = project.new_group('DayEchoApp', 'Sources/DayEchoApp')
+app_files.each do |f|
+  path = File.join(ROOT, f)
+  next unless File.exist?(path)
+  ref = app_group.new_reference(File.basename(f))
+  ios_target.add_file_references([ref])
+end
+
+# ---- 资源 ----
+res_group = project.new_group('Resources')
+catalog_path = File.join(ROOT, 'Resources/Assets.xcassets')
+if File.directory?(catalog_path)
+  catalog = res_group.new_file(catalog_path)
+  ios_target.add_resources([catalog])
+end
+
+privacy = res_group.new_file(File.join(ROOT, 'legal/privacy_policy.html'))
+ios_target.add_resources([privacy])
+
+# ---- 本地化 ----
+project.build_configurations.each do |cfg|
+  cfg.build_settings['DEVELOPMENT_LANGUAGE'] = 'en'
+end
+project.root_object.attributes['developmentRegion'] = 'en'
+project.root_object.attributes['knownRegions'] = ['en', 'zh-Hans', 'Base']
+
+lproj_group = project.new_group('Localization', 'Sources/DayEchoApp/Resources')
+%w[en zh-Hans].each do |lang|
+  lproj_path = File.join(ROOT, "Sources/DayEchoApp/Resources/#{lang}.lproj")
+  next unless File.directory?(lproj_path)
+  vg = lproj_group.new_variant_group("#{lang}.lproj")
+  vg.new_reference(File.join(lproj_path, 'Localizable.strings'))
+  ios_target.add_resources([vg])
+end
+
+# ============================================================
+# 5. iOS App Build Settings
+# ============================================================
+ios_target.build_configurations.each do |cfg|
+  s = cfg.build_settings
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = BUNDLE_ID
+  s['PRODUCT_NAME'] = 'DayEcho'
+  s['MARKETING_VERSION'] = '1.0.0'
+  s['CURRENT_PROJECT_VERSION'] = '1'
+  s['SWIFT_VERSION'] = '6.0'
+  s['IPHONEOS_DEPLOYMENT_TARGET'] = IOS_MIN
+  s['TARGETED_DEVICE_FAMILY'] = '1,2'
+  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  s['INFOPLIST_KEY_UILaunchScreen_Generation'] = 'YES'
+  s['INFOPLIST_KEY_UISupportedInterfaceOrientations'] = 'UIInterfaceOrientationPortrait'
+  s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] =
+    'DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的设备上。'
+  s['INFOPLIST_KEY_NSHealthShareUsageDescription'] =
+    '用于把心率与活动信息关联到录音时间点，全部在本地处理。'
+  s['ASSETCATALOG_COMPILER_APPICON_NAME'] = 'AppIcon'
+  s['CODE_SIGN_STYLE'] = 'Automatic'
+  s['SWIFT_EMIT_LOC_STRINGS'] = 'YES'
+  s['ENABLE_USER_SCRIPT_SANDBOXING'] = 'YES'
+  s['DEVELOPMENT_TEAM'] = ''
+  s['CODE_SIGN_IDENTITY'] = ''
+  s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
+end
+
+project.build_configurations.each do |cfg|
+  cfg.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = IOS_MIN
+  cfg.build_settings['SWIFT_VERSION'] = '6.0'
+end
+
+# ============================================================
+# 6. Scheme
+# ============================================================
+scheme = Xcodeproj::XCScheme.new
+scheme.add_build_target(kit_target)
+scheme.add_build_target(watch_target)
+scheme.add_build_target(ios_target)
+scheme.set_launch_target(ios_target)
+scheme.save_as(PROJ_PATH, 'DayEcho', true)
+
+project.save
+puts "已生成 #{PROJ_PATH}"
+puts "ios:   #{ios_target.name}  src=#{ios_target.source_build_phase.files.count} res=#{ios_target.resources_build_phase.files.count}"
+puts "kit:   #{kit_target.name}  src=#{kit_target.source_build_phase.files.count}"
+puts "watch: #{watch_target.name}  src=#{watch_target.source_build_phase.files.count}"
