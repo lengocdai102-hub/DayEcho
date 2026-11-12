@@ -94,6 +94,8 @@ watch_kit_target.build_configurations.each do |cfg|
   s['SWIFT_VERSION'] = '6.0'
   s['WATCHOS_DEPLOYMENT_TARGET'] = WATCH_MIN
   s['TARGETED_DEVICE_FAMILY'] = '4'
+  s['SUPPORTED_PLATFORMS'] = 'watchos watchsimulator'
+  s['SDKROOT'] = 'watchos'
   s['DEFINES_MODULE'] = 'YES'
   s['SKIP_INSTALL'] = 'YES'
   s['BUILD_LIBRARY_FOR_DISTRIBUTION'] = 'NO'
@@ -123,6 +125,8 @@ watch_ext.build_configurations.each do |cfg|
   s['SWIFT_VERSION'] = '6.0'
   s['WATCHOS_DEPLOYMENT_TARGET'] = WATCH_MIN
   s['TARGETED_DEVICE_FAMILY'] = '4'
+  s['SUPPORTED_PLATFORMS'] = 'watchos watchsimulator'
+  s['SDKROOT'] = 'watchos'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
   s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] =
@@ -171,6 +175,8 @@ watch_target.build_configurations.each do |cfg|
   s['SWIFT_VERSION'] = '6.0'
   s['WATCHOS_DEPLOYMENT_TARGET'] = WATCH_MIN
   s['TARGETED_DEVICE_FAMILY'] = '4'
+  s['SUPPORTED_PLATFORMS'] = 'watchos watchsimulator'
+  s['SDKROOT'] = 'watchos'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
   s['INFOPLIST_KEY_WKCompanionAppBundleIdentifier'] = BUNDLE_ID
@@ -274,13 +280,31 @@ end
 # ============================================================
 # 6. Scheme
 # ============================================================
+# 两个 scheme：
+#   DayEcho        —— iOS App（含 watchOS 依赖），用 -destination 'generic/platform=iOS Simulator'
+#   DayEchoWatch   —— 纯 watchOS，用 -destination 'generic/platform=watchOS Simulator'
+#
+# 关键：不能用 -sdk iphonesimulator —— 它会把所有 target 的 SDKROOT
+# 覆盖成 iphonesimulator，而 watchapp2 / watchkit2-extension 的
+# product type spec 只存在于 watchsimulator 域，报
+# "unable to resolve product type ... in domain 'iphonesimulator'"。
+# 用 -destination 让 Xcode 按 target 各自解析平台。
+
 scheme = Xcodeproj::XCScheme.new
 scheme.add_build_target(kit_target)
+scheme.add_build_target(watch_kit_target)
 scheme.add_build_target(watch_ext)
 scheme.add_build_target(watch_target)
 scheme.add_build_target(ios_target)
 scheme.set_launch_target(ios_target)
 scheme.save_as(PROJ_PATH, 'DayEcho', true)
+
+watch_scheme = Xcodeproj::XCScheme.new
+watch_scheme.add_build_target(watch_kit_target)
+watch_scheme.add_build_target(watch_ext)
+watch_scheme.add_build_target(watch_target)
+watch_scheme.set_launch_target(watch_target)
+watch_scheme.save_as(PROJ_PATH, 'DayEchoWatch', true)
 
 project.save
 puts "已生成 #{PROJ_PATH}"

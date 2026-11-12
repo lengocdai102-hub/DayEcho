@@ -60,26 +60,31 @@ jobs:
           ls -la DayEcho.xcodeproj
 
       # ---- 4. 编译 iOS App（模拟器架构，验证能编过）----
+      # 用 -destination 而不是 -sdk：
+      # -sdk iphonesimulator 会把所有 target 的 SDKROOT 覆盖成 iphonesimulator，
+      # 而 watchapp2 / watchkit2-extension 的 product type spec 只存在于
+      # watchsimulator 域 → "unable to resolve product type ... in domain
+      # 'iphonesimulator'"。-destination 让 Xcode 按 target 各自解析平台。
       - name: Build iOS app (simulator)
         run: |
           xcodebuild \
             -project DayEcho.xcodeproj \
             -scheme DayEcho \
-            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
             -configuration Debug \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             build
 
       # ---- 5. 编译 watchOS App（模拟器架构）----
-      # Watch target 单独编一遍：watchOS 的 API 限制和 iOS 不同，
+      # 用独立的 watchOS scheme：watchOS 的 API 限制和 iOS 不同，
       # 混在 iOS 构建里出错难定位。
       - name: Build watchOS app (simulator)
         run: |
           xcodebuild \
             -project DayEcho.xcodeproj \
-            -scheme DayEcho \
-            -sdk watchsimulator \
+            -scheme DayEchoWatch \
+            -destination 'generic/platform=watchOS Simulator' \
             -configuration Debug \
             -derivedDataPath "$RUNNER_TEMP/DerivedDataWatch" \
             CODE_SIGNING_ALLOWED=NO \
@@ -94,7 +99,7 @@ jobs:
           xcodebuild \
             -project DayEcho.xcodeproj \
             -scheme DayEcho \
-            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -configuration Release \
             -derivedDataPath "$RUNNER_TEMP/DerivedDataDevice" \
             CODE_SIGNING_ALLOWED=NO \
@@ -108,7 +113,7 @@ jobs:
           xcodebuild \
             -project DayEcho.xcodeproj \
             -scheme DayEcho \
-            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -configuration Release \
             -derivedDataPath "$RUNNER_TEMP/DerivedDataDevice" \
             -archivePath "$RUNNER_TEMP/DayEcho-device.xcarchive" \
