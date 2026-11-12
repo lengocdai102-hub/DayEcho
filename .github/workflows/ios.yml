@@ -248,6 +248,15 @@ jobs:
             echo "::error::Extension 的 NSExtensionPointIdentifier 不对（当前='$EPI'，应为 com.apple.watchkit）"; exit 1
           fi
           echo "NSExtensionPointIdentifier = $EPI  ✓"
+
+          # WKAppBundleIdentifier 必须等于 Watch App 的 CFBundleIdentifier
+          WKC=$(/usr/libexec/PlistBuddy -c 'Print :WKAppBundleIdentifier' "$APPEX/Info.plist" 2>/dev/null || echo "")
+          WAC=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$FOUND/Info.plist" 2>/dev/null || echo "")
+          echo "WKAppBundleIdentifier = $WKC"
+          echo "watch app CFBundleIdentifier = $WAC"
+          if [ -z "$WKC" ] || [ "$WKC" != "$WAC" ]; then
+            echo "::error::WKAppBundleIdentifier 与 watch app 的 CFBundleIdentifier 不一致"; exit 1
+          fi
           echo "--- watch App 结构 ---"
           find "$FOUND" -maxdepth 3 -name "*.appex" -o -maxdepth 2 -name "Info.plist" | sed "s|$RUNNER_TEMP||" 
           echo "--- 嵌入的 Extension: $APPEX ---"

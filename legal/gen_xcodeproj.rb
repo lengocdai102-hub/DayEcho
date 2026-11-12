@@ -142,6 +142,8 @@ watch_ext.build_configurations.each do |cfg|
   s['GENERATE_INFOPLIST_FILE'] = 'NO'
   s['INFOPLIST_FILE'] = 'legal/WatchExtension-Info.plist'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  # 注入给 plist 里的 $(WATCH_APP_BUNDLE_IDENTIFIER) 用
+  s['WATCH_APP_BUNDLE_IDENTIFIER'] = WATCH_BUNDLE_ID
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''

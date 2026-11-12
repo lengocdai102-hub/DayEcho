@@ -31,6 +31,18 @@
 	    Verify that the value of NSExtensionPointIdentifier in your
 	    WatchKit Extension's Info.plist is set to com.apple.watchkit.
 	-->
+	<!--
+	  ★ WKAppBundleIdentifier 必须等于 Watch App 的 CFBundleIdentifier。
+	  值用构建变量 $(WATCH_APP_BUNDLE_IDENTIFIER)，
+	  由 legal/gen_xcodeproj.rb 从 WATCH_BUNDLE_ID 常量注入，保证同步。
+	  不写这个会报：
+	  error: WatchKit App doesn't contain any WatchKit Extensions whose
+	  WKAppBundleIdentifier matches "...". Verify that the value of
+	  WKAppBundleIdentifier in your WatchKit Extension's Info.plist matches
+	  the value of CFBundleIdentifier in your WatchKit App's Info.plist.
+	-->
+	<key>WKAppBundleIdentifier</key>
+	<string>$(WATCH_APP_BUNDLE_IDENTIFIER)</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>
