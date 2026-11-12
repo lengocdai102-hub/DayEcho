@@ -18,6 +18,27 @@
 - ✅ **watch App 真实嵌入宿主包**（`DayEcho.app/Watch/DayEchoWatch.app`）
 - ✅ **unsigned `.ipa` 已产出**（macos-15: 92,468 B / macos-26: 92,537 B）
 
+最终 run：`43239551136`（提交 `15b4434`），双 runner 各 23 个成功步骤。
+产物已下载到本地 `dist/DayEcho-unsigned.ipa`，
+SHA-256 `b7aca9cdae8af309b08219ac69f8ed95ba4776a68e4363a02c4f472e6740567c`，
+并**在本地解包实测**（非仅看 CI 日志）：
+
+```
+Payload/DayEcho.app/DayEcho                      Mach-O 64-bit executable arm64
+Payload/DayEcho.app/Watch/DayEchoWatch.app/DayEchoWatch
+                                                 Mach-O universal: [arm64_32_v8] [arm64]
+Payload/DayEcho.app/Watch/DayEchoWatch.app/Info.plist
+    CFBundleIdentifier                = com.dayecho.app.watchkitapp
+    WKApplication                     = true
+    WKCompanionAppBundleIdentifier   = com.dayecho.app
+    WKRunsIndependentlyOfCompanionApp = false
+    WKWatchOnly                       = <NOT_SET>
+    MinimumOSVersion                 = 11.0
+```
+
+> ⚠️ `arm64_32_v8` 是 watchOS 设备的真实指针宽度（32 位），这正是缺陷 ② 的成因 ——
+> 换句话说，**watch 二进制的 arm64_32 切片存在，就证明它是为真机 watch 编译的**，不是模拟器产物。
+
 实测判据键值（来自 run `43236911252` 日志）：
 
 ```

@@ -148,6 +148,38 @@ GitHub Actions 在 `macos-15` / `macos-26` 双 runner 上构建：
 > unsigned `.ipa` 只证明「真机架构下能编译链接通过」，**不能直接安装**。
 > 真正装机还需要 Apple Developer 账号、证书与 Provisioning Profile。
 
+### 最新产物（run `43239551136`，提交 `15b4434`）
+
+| 项 | 值 |
+|----|-----|
+| CI run | `43239551136`（`macos-15` + `macos-26` 双 runner 全绿，各 23 个成功步骤） |
+| 产物 | `DayEcho-unsigned.ipa` |
+| 大小 | 92,537 B（macos-15）/ 92,468 B（macos-26） |
+| SHA-256 | `b7aca9cdae8af309b08219ac69f8ed95ba4776a68e4363a02c4f472e6740567c` |
+| 本地路径 | `dist/DayEcho-unsigned.ipa` |
+
+**本地解包实测**（不是只看 CI 日志）：
+
+```
+Payload/DayEcho.app/
+├── DayEcho                      Mach-O 64-bit executable arm64
+├── en.lproj/ zh-Hans.lproj/     ✅ 双语资源齐
+├── privacy_policy.html
+└── Watch/
+    └── DayEchoWatch.app/
+        ├── DayEchoWatch         Mach-O universal: [arm64_32_v8] [arm64]   ← watchOS 真机架构
+        ├── en.lproj/ zh-Hans.lproj/  ✅ 双语资源齐
+        └── Info.plist            WKApplication=true
+                                 WKCompanionAppBundleIdentifier=com.dayecho.app
+                                 WKRunsIndependentlyOfCompanionApp=false
+                                 CFBundleIdentifier=com.dayecho.app.watchkitapp
+                                 MinimumOSVersion=11.0
+```
+
+> ⚠️ **要装到真机还差一步**：需要 Apple Developer 账号 + 证书 + Provisioning Profile，
+> 用 Xcode 打开 `DayEcho.xcodeproj` 走签名流程重新 archive。
+> 目前的 `.ipa` 是 **unsigned** 的，直接装机会被系统拒绝。
+
 ---
 
 ## 隐私
