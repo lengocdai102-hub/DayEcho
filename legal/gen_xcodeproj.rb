@@ -19,7 +19,9 @@ FileUtils.rm_rf(PROJ_PATH)
 project = Xcodeproj::Project.new(PROJ_PATH)
 
 IOS_MIN = '17.0'
-WATCH_MIN = '10.0'
+# watchOS 11 起支持 AVAudioSession 的 .allowBluetooth（蓝牙麦克风），
+# 对全天录音是实打实的需求。竞品 Auday 同样要求 watchOS 11。
+WATCH_MIN = '11.0'
 BUNDLE_ID = 'com.dayecho.app'
 WATCH_BUNDLE_ID = 'com.dayecho.app.watchkitapp'
 
