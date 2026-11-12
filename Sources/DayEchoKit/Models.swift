@@ -101,18 +101,21 @@ public struct RetentionPolicy: Codable, Hashable, Sendable {
     /// 保留天数；nil 表示永久保留
     public var keepDays: Int?
     /// 存储上限（字节）；nil 表示不限
-    public var maxTotalBytes: Int?
+    ///
+    /// ★ 必须是 Int64，不能用 Int。
+    /// Apple Watch 设备是 arm64_32（32 位指针架构），watchOS 上的 Int 是 32 位，
+    /// 最大 2147483647（2 GiB）。8 GiB 这个默认值在 watchOS 设备构建时直接报
+    ///     error: integer literal '8589934592' overflows when stored into 'Int'
+    /// 字节数本来就该用 64 位 —— 这是跨 32/64 位平台安全的类型。
+    public var maxTotalBytes: Int64?
     /// 是否在达到上限时也删除未传输段（默认 false —— 宁可写满也不丢）
     public var deleteUnverifiedWhenOverLimit: Bool
 
     public init(
         keepDays: Int? = 30,
-        // ★ 直接写十进制字面量，不写 8 * 1024 * 1024 * 1024。
-        // 纯字面量乘法表达式会被 Swift 按「能放下的最小位宽」推断成 32 位，
-        // Release 的 -O 常量折叠时 8388608 * 1024 溢出。
-        // 写 Int(8) * 1024 * 1024 * 1024 也一样炸 —— 后面的 1024 仍是字面量。
-        // Debug 构建不做常量折叠，不报；只有 Release + 完整 SDK 才暴露。
-        maxTotalBytes: Int? = 8_589_934_592,  // 8 GiB
+        // 8 GiB。类型是 Int64（见属性声明处的说明），
+        // 所以这个字面量在任何平台都不会溢出。
+        maxTotalBytes: Int64? = 8_589_934_592,  // 8 GiB
         deleteUnverifiedWhenOverLimit: Bool = false
     ) {
         self.keepDays = keepDays

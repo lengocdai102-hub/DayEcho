@@ -255,14 +255,16 @@ public final class RecordingStore: @unchecked Sendable {
 
             // 总量上限：只从最旧的 verified 段开始删
             if let maxBytes = policy.maxTotalBytes {
-                var total = keep.reduce(0) { $0 + $1.byteCount }
+                // 用 Int64 累加：单段 byteCount 是 Int，但累加总量
+                // 可能超过 32 位上限（watchOS 上 Int 是 32 位）。
+                var total: Int64 = keep.reduce(Int64(0)) { $0 + Int64($1.byteCount) }
                 if total > maxBytes {
                     let ordered = keep.sorted { $0.endedAt < $1.endedAt }
                     var toDrop = Set<UUID>()
                     for seg in ordered where total > maxBytes {
                         if seg.state != .verified { continue }
                         if !policy.deleteUnverifiedWhenOverLimit && seg.state != .verified { continue }
-                        total -= seg.byteCount
+                        total -= Int64(seg.byteCount)
                         toDrop.insert(seg.id)
                     }
                     keep.removeAll { toDrop.contains($0.id) }
