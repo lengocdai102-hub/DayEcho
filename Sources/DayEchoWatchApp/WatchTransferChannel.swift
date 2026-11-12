@@ -1,5 +1,10 @@
 import Foundation
 import WatchConnectivity
+// ★ 必须 import DayEchoKit ★
+// 这里用了 SegmentTransport / TransferPayload / SegmentTransferResult ——
+// 全部定义在 DayEchoKit 里。少了这一行，watchOS target 编译报
+// 「cannot find type 'SegmentTransport' in scope」。
+import DayEchoKit
 
 // MARK: - Watch 侧：WCSession 传输通道
 //

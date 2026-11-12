@@ -2,6 +2,9 @@ import Foundation
 import SwiftUI
 import WatchKit
 import WatchConnectivity
+// ★ 必须 import DayEchoKit ★
+// 这里用了 DayEchoKit 的传输协调器与 ACK 类型。
+import DayEchoKit
 
 // MARK: - Watch 端会话协调器
 //

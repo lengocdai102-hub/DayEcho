@@ -47,6 +47,28 @@ jobs:
       - name: Run unit tests
         run: swift run DayEchoTestRunner
 
+      # ---- 1a. Kit 符号可见性检查（跨模块 import 缺失）----
+      #
+      # ★ 为什么需要这一步 ★
+      #
+      # 上一轮 CI 真实踩到：
+      #   WatchTransferChannel.swift 用了 SegmentTransport / TransferPayload /
+      #   SegmentTransferResult —— 全在 DayEchoKit 里 —— 但忘了 import DayEchoKit。
+      #
+      # ★ 为什么单测抓不到 ★
+      #
+      # 单测跑的是 DayEchoKit 自己（SwiftPM target 内），
+      # 同 module 内类型天然可见，永远不需要 import。
+      # 「跨 module 引用」只有 Xcode 工程真编译时才发生。
+      #
+      # ★ 为什么这一层仍然必要（虽然真编译也能抓到）★
+      #
+      # 真编译在第 6 步才跑 —— 前面 5 步（单测/本地化/API 审计/语法/plist）
+      # 全绿会让「本地全绿」的错觉持续很久。
+      # 把这个检查放在最前面 ⇒ 缺 import 在 3 秒内暴露，而不是 2 分钟后。
+      - name: Check DayEchoKit symbol visibility across modules
+        run: swift run KitVisibilityCheck
+
       # ---- 2. 本地化键一致性检查 ----
       - name: Check localization keys
         run: swift run L10nCheck
