@@ -1,5 +1,110 @@
 import Foundation
 
+// MARK: - 输入来源（三源归一）
+
+/// ★ 输入来源 —— 决定候选过滤策略与提示文案 ★
+///
+/// DayEcho 的三个外部入口在 v3 架构里被归一为「三源归一」：
+/// 所有来源最终只产出「文本 + 来源 + 时刻」，走**完全同一套**抽取与时间轴存储逻辑。
+///
+/// ★ 为什么来源必须显式建模，而不能用隐式默认值 ★
+///
+/// 三个源的**信噪比差异极大**：
+/// - `.watchCapture` 是被动录音，说话人可能是老板、可能是朋友、可能是电话另一端，
+///   里面绝大多数句子根本不是「用户自己的日程」；
+/// - `.shareExtension` / `.shortcutIntent` 是用户**主动挑出来交给 App 的**，
+///   几乎必然与日程相关。
+///
+/// 如果不把 source 显式带进候选构建层，「要不要第一人称自我指令词」这个判断
+/// 就只能靠某个隐式默认值决定 —— 而默认值一旦被某条调用路径漏传，
+/// 结果是「Watch 的噪音被当成日程弹窗」或「邮件里的真日程被词表误杀」。
+/// ⇒ source 一路显式传到底，在候选构建层**显式分支**，不依赖默认值。
+public enum IngestionSource: String, Codable, Sendable, CaseIterable {
+    /// Watch 表盘一键抓拍（音频 → iPhone 端侧转写）
+    case watchCapture
+    /// Share Extension 选中的外部文本（邮件 / 聊天软件）
+    case shareExtension
+    /// App Intent（快捷指令）喂入的文本
+    case shortcutIntent
+
+    /// 是否属于「用户主动投递」的来源。
+    ///
+    /// ★ 判据：用户是否**亲手把这段文本挑出来交给 App** ★
+    ///
+    /// 主动投递（shareExtension / shortcutIntent）的信噪比远高于被动录音，
+    /// 所以候选过滤可以放宽第一人称自我指令词的要求。
+    /// 被动录音（watchCapture）必须严格 —— 因为说话人可能根本不是用户本人。
+    public var isUserInitiated: Bool {
+        switch self {
+        case .watchCapture: return false
+        case .shareExtension, .shortcutIntent: return true
+        }
+    }
+
+    /// 面向用户的来源标签（界面显示用）
+    public var displayLabel: String {
+        switch self {
+        case .watchCapture: return "Watch 抓拍"
+        case .shareExtension: return "外部文本"
+        case .shortcutIntent: return "快捷指令"
+        }
+    }
+}
+
+// MARK: - 统一文本入口
+
+/// ★ 所有外部文本进系统的唯一载体 ★
+///
+/// 硬约束：**任何来源的文本进入系统后，走完全同一套抽取与时间轴存储逻辑。**
+/// 不允许任何源绕过规则层（`TimeExpressionExtractor`）直接写 EventKit。
+///
+/// - `text`：待抽取的文本
+/// - `occurredAt`：**内容产生的时刻**，不是进入系统的时刻。
+///   这个区分很关键 —— 用户周一分享了一封写着「周三开会」的邮件，
+///   候选的提醒时刻应该按邮件内容里的「周三」算，
+///   但时间轴上这条记录的位置应当是「周一分享的时刻」。
+///   两者混用会导致「昨天分享的邮件里写着明天开会」被算成过期。
+public struct IngestedTextEntry: Codable, Identifiable, Hashable, Sendable {
+    public let id: UUID
+    public let source: IngestionSource
+    public let text: String
+    /// 内容产生的时刻（不是进入系统的时刻）
+    public let occurredAt: Date
+    /// 仅 `.watchCapture` 有：对应的录音段标识（`AudioSegment.id`）
+    public let audioRef: String?
+    /// 原始载荷（Share 扩展传原文、Watch 传文件名等）
+    public let rawPayload: Data?
+
+    public init(
+        id: UUID = UUID(),
+        source: IngestionSource,
+        text: String,
+        occurredAt: Date,
+        audioRef: String? = nil,
+        rawPayload: Data? = nil
+    ) {
+        self.id = id
+        self.source = source
+        self.text = text
+        self.occurredAt = occurredAt
+        self.audioRef = audioRef
+        self.rawPayload = rawPayload
+    }
+
+    /// 是否是 Watch 抓拍（决定要不要挂音频引用）
+    public var isFromWatch: Bool { source == .watchCapture }
+
+    /// 清洗后的文本：去掉首尾空白与换行。
+    /// 转写文本常带多余换行与空格，直接进规则层会降低命中率。
+    public var normalizedText: String {
+        text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+}
+
 // MARK: - 录音分段
 
 /// 一段连续录音。Watch 端每到达 `maxSegmentSeconds` 封一段，

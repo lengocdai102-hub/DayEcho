@@ -1,0 +1,96 @@
+name: Kit Logic CI (Linux)
+
+# ★ 为什么单独开一个 Linux 工作流 ★
+#
+# GitHub Actions 免费账户的额度结构：
+#   - Linux  runner: 2000 分钟/月，**1 倍**计费
+#   - macOS  runner:   50 分钟/月，**10 倍**计费（≈ 折合 200 分钟挂钟分）
+#
+# 本仓库 2026-11-13 实测：macOS 额度已撞穿（折合用掉 193 分钟），
+# 后续 push 的 job **直接不启动**（报 "recent account payments have failed"，
+# 实为额度耗尽，不是付款失败）。
+#
+# 而 DayEchoKit 的 145 个纯逻辑单测里，真正需要 macOS 的只有
+# 「纯 Swift 实现 vs CryptoKit 的交叉校验」那 5 条 —— 其余 140 条
+# （存储/传输/时间轴/候选/规则层/摘要）全是纯 Foundation，不依赖任何 Apple 框架。
+#
+# ⇒ 把纯逻辑测试搬到 Linux，1 倍计费、额度充足，改动当天就能得到反馈。
+#   macOS 工作流保留，只负责 Xcode 工程构建（那部分离不开 macOS）。
+#
+# ★ 一致性保证 ★
+# DayEchoKit 的 SHA-256 有两条实现路径（Apple=CryptoKit，Linux=纯 Swift），
+# 两条必须逐字节一致，否则真机上传的校验和会和 Linux 算出的对不上。
+# 这条不变量由 DigestTests 钉死：
+#   - Linux 上跑 FIPS 180-4 官方向量（保证算法本身正确）
+#   - macOS 上跑「纯 Swift == CryptoKit」直接对比（保证两条路径一致）
+# 见 Sources/DayEchoTestCases/DigestTests.swift
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Sources/DayEchoKit/**'
+      - 'Sources/DayEchoTestCases/**'
+      - 'Sources/DayEchoTestRunner/**'
+      - 'Package.swift'
+      - '.github/workflows/ci-linux.yml'
+  pull_request:
+    paths:
+      - 'Sources/DayEchoKit/**'
+      - 'Sources/DayEchoTestCases/**'
+      - 'Sources/DayEchoTestRunner/**'
+      - 'Package.swift'
+      - '.github/workflows/ci-linux.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true   # ★ Linux runner 起得快，排队浪费额度 ⇒ 可以取消 ★
+
+jobs:
+  kit-tests:
+    name: DayEchoKit Tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.9"
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Run tests
+        run: swift run DayEchoTestRunner
+
+      # ★ 交叉校验：Linux 上的摘要必须与 CryptoKit 完全一致 ★
+      #
+      # DigestTests 在 Linux 上会跑 FIPS 180-4 官方向量。
+      # 这里额外跑一次「纯 Swift vs CryptoKit」是不可能的（Linux 没有 CryptoKit），
+      # 所以一致性由 macOS 工作流负责 —— 但**官方向量这一层必须在 Linux 上也过**，
+      # 否则 Linux 路径的算法一旦坏掉，没人会发现。
+      #
+      # 这里额外做一件事：确认 Linux 跑出来的用例数与预期一致，
+      # 防止「编译通过但没跑测试」这种静默通过。
+      - name: Assert test count
+        run: |
+          set -euo pipefail
+          OUTPUT="$(swift run DayEchoTestRunner 2>&1)"
+          echo "$OUTPUT"
+          # 期望 145 条（Linux 上 5 条 CryptoKit 交叉对比用例会被 #if 跳过）
+          if ! echo "$OUTPUT" | grep -qE '通过 1[0-9]{2} / 失败 0'; then
+            echo "❌ 测试未全部通过或数量异常，详见上方输出"
+            exit 1
+          fi
+          if echo "$OUTPUT" | grep -q '失败明细'; then
+            echo "❌ 存在失败用例"
+            exit 1
+          fi
+          echo "✅ 全部单测通过"

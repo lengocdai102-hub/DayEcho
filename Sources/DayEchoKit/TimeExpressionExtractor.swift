@@ -59,6 +59,17 @@ public struct TimeExpression: Sendable, Codable, Equatable {
     public let meridiem: String?
     /// 相对天数偏移（今天=0，明天=1，后天=2）
     public let dayOffset: Int?
+    /// ★ 绝对日期的月（1...12），nil 表示无 ★
+    ///
+    /// 「三月十五号」→ month=3
+    /// 「下个月五号」→ monthOffset=1 + dayOfMonth=5（月份由解析时相对当前月算出）
+    public let month: Int?
+    /// ★ 绝对日期的日（1...31），nil 表示无 ★
+    ///
+    /// 「十五号」→ dayOfMonth=15
+    public let dayOfMonth: Int?
+    /// ★ 月份相对偏移（0=本月，1=下个月，-1=上个月） ★
+    public let monthOffset: Int?
     /// 星期几（1=周日 ... 7=周六），nil 表示无
     public let weekday: Int?
     /// 重复模式
@@ -76,6 +87,9 @@ public struct TimeExpression: Sendable, Codable, Equatable {
         minute: Int? = nil,
         meridiem: String? = nil,
         dayOffset: Int? = nil,
+        month: Int? = nil,
+        dayOfMonth: Int? = nil,
+        monthOffset: Int? = nil,
         weekday: Int? = nil,
         recurrence: RecurrencePattern = .none,
         recurrenceText: String? = nil,
@@ -88,6 +102,9 @@ public struct TimeExpression: Sendable, Codable, Equatable {
         self.minute = minute
         self.meridiem = meridiem
         self.dayOffset = dayOffset
+        self.month = month
+        self.dayOfMonth = dayOfMonth
+        self.monthOffset = monthOffset
         self.weekday = weekday
         self.recurrence = recurrence
         self.recurrenceText = recurrenceText
@@ -284,6 +301,107 @@ public struct TimeExpressionExtractor {
                         confidence: 0.8
                     ))
                 }
+            }
+        }
+
+        // 4b) ★ 绝对日期：「3月15日」「三月十五号」「下个月五号」 ★
+        //
+        // ★ 为什么必须支持绝对日期 ★
+        //
+        // Share Extension 的典型用法是：用户从邮件/聊天里挑一句话分享过来。
+        // 那些文本里的日期**绝大多数是绝对日期**（「3月15日交房租」「下个月五号面试」），
+        // 而不是「明天」「周五」这种相对日期。
+        //
+        // 如果规则层不支持绝对日期 ⇒ Share 扩展这条路径基本等于不可用 ——
+        // 而 Share 扩展恰恰是 v3 里最被看重的入口（用户主动、信号强、噪声低）。
+        //
+        // ★ 解析策略 ★
+        // 两种写法都要支持：
+        //   1) 月+日：「3月15日」「三月十五号」「3月15号」
+        //   2) 仅日 + 月份相对词：「下个月五号」「这个月20号」
+        //   3) 仅日：「15号」「十五号」⇒ 落在**本月**，若已过则落到下月
+        //
+        // 只认「号/日」后缀，避免把「三点」「十点」误当日期（那是钟点，已由钟点规则处理）。
+
+        // 4b-i) 月 + 日
+        let monthDayPattern = try? NSRegularExpression(
+            pattern: "([0-9]{1,2}|[零〇一二两三四五六七八九十]{1,3})\\s*月\\s*([0-9]{1,2}|[零〇一二两三四五六七八九十]{1,3})\\s*[日号]"
+        )
+        if let monthDayPattern {
+            monthDayPattern.enumerateMatches(in: text, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+                guard let m, m.numberOfRanges >= 3 else { return }
+                guard let mon = Self.parseChineseNumber(ns.substring(with: m.range(at: 1))) else { return }
+                guard let day = Self.parseChineseNumber(ns.substring(with: m.range(at: 2))) else { return }
+                guard mon >= 1, mon <= 12, day >= 1, day <= 31 else { return }
+                exprs.append(TimeExpression(
+                    kind: .day,
+                    sourceText: ns.substring(with: m.range),
+                    month: mon,
+                    dayOfMonth: day,
+                    recurrence: recurrence,
+                    recurrenceText: recurrenceText,
+                    confidence: 0.9
+                ))
+            }
+        }
+
+        // 4b-ii) 月份相对词 + 日：「下个月五号」「这个月二十号」
+        let relMonthDayPattern = try? NSRegularExpression(
+            pattern: "(下个月|下月|这个月|本月|上个月|上月)\\s*([0-9]{1,2}|[零〇一二两三四五六七八九十]{1,3})\\s*[日号]"
+        )
+        if let relMonthDayPattern {
+            relMonthDayPattern.enumerateMatches(in: text, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+                guard let m, m.numberOfRanges >= 3 else { return }
+                let relWord = ns.substring(with: m.range(at: 1))
+                guard let day = Self.parseChineseNumber(ns.substring(with: m.range(at: 2))) else { return }
+                guard day >= 1, day <= 31 else { return }
+                var mo: Int
+                if relWord.hasPrefix("下") { mo = 1 }
+                else if relWord.hasPrefix("上") { mo = -1 }
+                else { mo = 0 }
+                exprs.append(TimeExpression(
+                    kind: .day,
+                    sourceText: ns.substring(with: m.range),
+                    dayOfMonth: day,
+                    monthOffset: mo,
+                    recurrence: recurrence,
+                    recurrenceText: recurrenceText,
+                    confidence: 0.88
+                ))
+            }
+        }
+
+        // 4b-iii) 仅日：「十五号」「20号」
+        //
+        // ★ 风险控制 ★
+        // 「十号」既可能是日期也可能是「十号楼」。这里只取纯「号」且数字 1...31，
+        // 并且**不在已有月日匹配范围内**（月日匹配会先被消费）。
+        // 落月规则：先落本月，若本月该日已过 ⇒ 落下月。
+        // 这是「最近的将来」约定 —— 口语里说「十五号」默认指还没到的那个十五号。
+        let bareDayPattern = try? NSRegularExpression(
+            pattern: "(?<![0-9零〇一二两三四五六七八九十])([0-9]{1,2}|[零〇一二两三四五六七八九十]{1,3})\\s*号"
+        )
+        if let bareDayPattern {
+            bareDayPattern.enumerateMatches(in: text, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+                guard let m, m.numberOfRanges >= 2 else { return }
+                guard let day = Self.parseChineseNumber(ns.substring(with: m.range(at: 1))) else { return }
+                guard day >= 1, day <= 31 else { return }
+                // 已被「X月Y号」覆盖则跳过（避免重复命中同一段）
+                let src = ns.substring(with: m.range)
+                if exprs.contains(where: { $0.kind == .day && $0.sourceText == src }) { return }
+                // 若这段文字里含有「月」字，说明属于月日表达，已在上面处理
+                let widerStart = max(0, m.range.location - 4)
+                let wider = ns.substring(with: NSRange(location: widerStart,
+                                                       length: min(4, m.range.location - widerStart)))
+                if wider.hasSuffix("月") { return }
+                exprs.append(TimeExpression(
+                    kind: .day,
+                    sourceText: src,
+                    dayOfMonth: day,
+                    recurrence: recurrence,
+                    recurrenceText: recurrenceText,
+                    confidence: 0.75
+                ))
             }
         }
 

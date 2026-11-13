@@ -67,6 +67,22 @@ try reminderCandidateTests()
 print("\n[时间表达抽取]")
 TimeExpressionTests.run()
 
+// ★ 三源归一管道 ★
+//
+// Watch 抓拍 / Share 扩展 / App Intent 三个入口归一到同一套抽取与分档逻辑。
+// 这组测试补上了仓库历史缺口：改代码前，转写→候选这一环没有转换代码，
+// 旧测试全部手工构造 LifeEvent 绕过它，所以断链也全绿。
+print("\n[三源归一管道]")
+IngestionPipelineTests.run()
+
+// ★ SHA-256 交叉校验 ★
+//
+// DayEchoKit 的摘要有两条实现路径（Apple 走 CryptoKit，Linux 走纯 Swift）。
+// 两边必须逐字节一致，否则真机上传的校验和会和 Linux CI 算出的对不上。
+// 这里用 FIPS 180-4 官方向量 + 两条路径直接对比把一致性钉死。
+print("\n[SHA-256 交叉校验]")
+DigestTests.run()
+
 print("\n─────────────────────────────")
 print("通过 \(Suite.passed) / 失败 \(Suite.failed.count)")
 if !Suite.failed.isEmpty {

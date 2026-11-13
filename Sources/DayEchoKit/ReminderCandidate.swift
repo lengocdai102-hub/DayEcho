@@ -92,23 +92,50 @@ public struct ReminderCandidateBuilder {
     ///   - event: 抽取出的生活事件
     ///   - now: 当前时间（用于判断是否已过去）
     ///   - minimumLeadMinutes: 至少提前多少分钟才认为「还来得及提醒」
+    ///   - forceConfirmation: ★ 强制要求用户确认 ★
+    ///
+    ///   **默认 nil** ⇒ 保持 v2 原有语义（「明确自我指令 + 高置信」⇒ 可自动写入）。
+    ///   传 true ⇒ 无论置信度多高都必须用户点确认。
+    ///
+    ///   ★ v3 为什么要这个开关 ★
+    ///
+    ///   Watch 录音是**被动采集** —— 说话人未必是用户本人。
+    ///   别人在会议室里说「提醒我买牛奶」，如果按原有语义自动写入系统提醒，
+    ///   那是一条**别人**的提醒落在了用户的提醒事项里。
+    ///   ⇒ Watch 来源一律 `forceConfirmation: true`。
+    ///
+    ///   但这个开关刻意**不改变** `ReminderCandidateBuilder` 的默认行为 ——
+    ///   现有 4 条用例钉住了「明确自我指令 ⇒ 不需要确认」的语义，
+    ///   那是 v2 的既有设计（用户亲口说了「提醒我」，自动写入是符合预期的）。
+    ///   收紧只发生在「来源不可信」的那条路径上。
     public static func build(
         from event: LifeEvent,
         now: Date = Date(),
-        minimumLeadMinutes: Int = 5
+        minimumLeadMinutes: Int = 5,
+        forceConfirmation: Bool? = nil
     ) -> ReminderCandidate? {
+        buildOne(from: event, now: now, minimumLeadMinutes: minimumLeadMinutes, forceConfirmation: forceConfirmation).first
+    }
+
+    /// ★ 内部实现（返回数组是为了让 buildAll 复用同一段逻辑）★
+    private static func buildOne(
+        from event: LifeEvent,
+        now: Date,
+        minimumLeadMinutes: Int,
+        forceConfirmation: Bool?
+    ) -> [ReminderCandidate] {
         // 已经过去很久的事件不再提醒（除非是每天重复）
         if !event.isDaily, event.when < now.addingTimeInterval(-3600) {
-            return nil
+            return []
         }
         // 过于贴近当下 ⇒ 用户可能已经在做了，不再打扰
         if !event.isDaily,
            event.when < now.addingTimeInterval(Double(minimumLeadMinutes) * 60) {
-            return nil
+            return []
         }
 
         let title = event.action.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return nil }
+        guard !title.isEmpty else { return [] }
 
         // 置信度 = 抽取置信度 + 明确自我指令加成
         var confidence = event.confidence
@@ -116,10 +143,15 @@ public struct ReminderCandidateBuilder {
             confidence = min(1.0, confidence + 0.25)
         }
         // 12 小时制歧义已被标记 ⇒ 置信度打折
-        let needsConfirmation = confidence < autoAcceptThreshold
+        var needsConfirmation = confidence < autoAcceptThreshold
             || !isExplicitSelfInstruction(event.sourceQuote)
 
-        return ReminderCandidate(
+        // ★ 强制确认（不可信来源）★
+        if forceConfirmation == true {
+            needsConfirmation = true
+        }
+
+        return [ReminderCandidate(
             title: title,
             fireDate: event.when,
             isDaily: event.isDaily,
@@ -128,17 +160,20 @@ public struct ReminderCandidateBuilder {
             sourceTime: event.when,
             confidence: confidence,
             needsConfirmation: needsConfirmation
-        )
+        )]
     }
 
     /// 批量构建
+    ///
+    /// - Parameter forceConfirmation: 强制要求确认（用于来源不可信的路径，如 Watch 被动录音）
     public static func buildAll(
         from events: [LifeEvent],
         now: Date = Date(),
-        minimumLeadMinutes: Int = 5
+        minimumLeadMinutes: Int = 5,
+        forceConfirmation: Bool? = nil
     ) -> [ReminderCandidate] {
         events
-            .compactMap { build(from: $0, now: now, minimumLeadMinutes: minimumLeadMinutes) }
+            .flatMap { buildOne(from: $0, now: now, minimumLeadMinutes: minimumLeadMinutes, forceConfirmation: forceConfirmation) }
             .sorted { $0.fireDate < $1.fireDate }
     }
 

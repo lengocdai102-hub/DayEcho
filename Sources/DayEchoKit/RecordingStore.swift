@@ -1,26 +1,18 @@
 import Foundation
-import CryptoKit
 
 // MARK: - SHA-256 工具
-
-public enum Digest {
-    public static func sha256(of data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
-    public static func sha256(ofFileAt url: URL) throws -> String {
-        // 流式计算，避免大文件一次性读进内存（录音段可能几十 MB）
-        var hasher = SHA256()
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        while true {
-            let chunk = handle.readData(ofLength: 1 << 20)
-            if chunk.isEmpty { break }
-            hasher.update(data: chunk)
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    }
-}
+//
+// ★ 实现已移到 Digest.swift ★
+//
+// 原来 Digest 写在 RecordingStore.swift 顶部，与 CryptoKit 绑死 ——
+// 而 `import CryptoKit` 在 Linux 上不存在，会让整个 DayEchoKit 在 Linux 编译失败，
+// 132 个纯逻辑单测一个都跑不了（GitHub Actions 免费账户 macOS 额度已耗尽，
+// Linux 2000 分钟/月是唯一能长期跑自动化的地方）。
+//
+// 现在拆到独立文件 Digest.swift，用条件编译切换：
+//     Apple 平台 → CryptoKit.SHA256
+//     Linux      → 纯 Swift FIPS 180-4 实现
+// 两条实现输出必须逐字节一致（用固定测试向量交叉校验）。
 
 // MARK: - 原子写入
 
