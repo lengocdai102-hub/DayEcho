@@ -67,13 +67,20 @@ try reminderCandidateTests()
 print("\n[时间表达抽取]")
 TimeExpressionTests.run()
 
+// ★ 共享容器与跨进程落盘（阶段 1.3）★
+//
+// App Group 的真实 container 路径因设备而异，无法硬编码，
+// 但目录结构、写入方式、读取语义都可以用临时目录验证。
+print("\n[共享容器与跨进程落盘]")
+try SharedContainerTests.run()
+
 // ★ 三源归一管道 ★
 //
 // Watch 抓拍 / Share 扩展 / App Intent 三个入口归一到同一套抽取与分档逻辑。
 // 这组测试补上了仓库历史缺口：改代码前，转写→候选这一环没有转换代码，
 // 旧测试全部手工构造 LifeEvent 绕过它，所以断链也全绿。
 print("\n[三源归一管道]")
-IngestionPipelineTests.run()
+try IngestionPipelineTests.run()
 
 // ★ SHA-256 交叉校验 ★
 //

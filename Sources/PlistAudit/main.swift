@@ -205,6 +205,57 @@ enum PlistAudit {
             print("ℹ️  未找到 DayEcho.xcodeproj —— 跳过生成后工程核对（CI 中会先生成工程再跑本审计）")
         }
 
+        // ══════════════ 5b. App Group 一致性审计 ══════════════
+        //
+        // ★ 为什么必须查这一项 ★
+        //
+        // App Group 标识符出现在**三个地方**：
+        //   1. legal/DayEchoApp.entitlements
+        //   2. legal/DayEchoWatchApp.entitlements
+        //   3. Sources/DayEchoKit/SharedContainer.swift 里的常量
+        //
+        // 这三处只要有一处不一致，表现就是：
+        //   App 装得上、能跑，但**扩展投递的内容主 App 永远读不到**
+        //   —— 而且没有任何报错，只是「分享出去的文字不见了」。
+        //   这种 bug 在真机上极难定位。
+        //
+        // ⇒ 用静态审计把三者钉死。
+        print("")
+        print("── App Group 一致性 ──")
+        let kitSourcesForGroup = readDir(root + "/Sources/DayEchoKit").joined(separator: "\n")
+        let expectedGroup = "group.com.dayecho.shared"
+
+        // 3.1 Swift 常量
+        if kitSourcesForGroup.contains("\(expectedGroup)") {
+            print("✓ Kit 源码含 App Group 常量 \(expectedGroup)")
+        } else {
+            failures.append("DayEchoKit 里找不到 App Group 常量 \(expectedGroup) —— SharedContainer 会解析不出共享容器")
+        }
+
+        // 3.2 两个 entitlements 文件
+        for entName in ["DayEchoApp.entitlements", "DayEchoWatchApp.entitlements"] {
+            let entPath = root + "/legal/" + entName
+            if let content = try? String(contentsOfFile: entPath, encoding: .utf8) {
+                if content.contains(expectedGroup) {
+                    print("✓ \(entName) 含 \(expectedGroup)")
+                } else {
+                    failures.append("\(entName) 里的 App Group 与源码常量不一致 —— 扩展投递的内容主 App 读不到")
+                }
+            } else {
+                // 文件不存在不算失败：默认构建不挂 entitlements（Personal Team 限制）
+                warnings.append("缺少 \(entName) —— 默认构建不挂 App Group，走 Documents 回退路径")
+            }
+        }
+
+        // 3.3 默认构建不应挂 entitlements（Personal Team 签名会失败）
+        if let generated = try? String(contentsOfFile: root + "/DayEcho.xcodeproj/project.pbxproj", encoding: .utf8) {
+            if generated.contains("CODE_SIGN_ENTITLEMENTS") {
+                print("ℹ️  当前工程挂了 CODE_SIGN_ENTITLEMENTS —— 需付费账号才能签名")
+            } else {
+                print("✓ 当前工程未挂 entitlements（Personal Team 可装，走回退路径）")
+            }
+        }
+
         // ══════════════ 6. 输出 ══════════════
         print("")
         if !warnings.isEmpty {

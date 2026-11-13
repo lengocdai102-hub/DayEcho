@@ -26,6 +26,36 @@ BUNDLE_ID = 'com.dayecho.app'
 WATCH_BUNDLE_ID = 'com.dayecho.app.watchkitapp'
 
 # ============================================================
+# App Group（跨进程共享容器）—— 默认**关闭**，按需开启
+# ============================================================
+#
+# ★ 为什么默认关闭 ★
+#
+# App Group 需要**付费开发者账号**（$99/年）才能签名。
+# 本项目的验收方式是「unsigned 构建装到用户自己的 iPhone 上跑」，
+# 用户用的是**免费 Personal Team**。
+#
+# 如果默认带上 entitlements：
+#   Personal Team 签名时遇到 app-group ⇒ **签名失败**
+#   ⇒ 整个 App 装不上 ⇒ V1 直接归零。
+#
+# ★ 所以必须做成开关 ★
+#   - 默认（不设置环境变量）：不挂 entitlements，Personal Team 也能装。
+#     SharedContainer 自动回退到 Documents/DayEchoShared。
+#   - DAYECHO_APP_GROUP=1：挂上 entitlements，走真正的共享容器。
+#     需要付费账号。
+#
+# ★ 开启方式 ★
+#   DAYECHO_APP_GROUP=1 ruby legal/gen_xcodeproj.rb
+#
+# ★ 回退路径不是降级，是正常路径 ★
+# 目录结构、文件名、写入方式在两条路径下完全一致，
+# 唯一差别只有落盘位置。测试覆盖的就是这一层。
+USE_APP_GROUP = ENV['DAYECHO_APP_GROUP'] == '1'
+APP_GROUP_ID = 'group.com.dayecho.shared'
+
+
+# ============================================================
 # 1. iOS App target
 # ============================================================
 ios_target = project.new_target(:application, 'DayEcho', :ios, IOS_MIN)
@@ -231,6 +261,11 @@ watch_target.build_configurations.each do |cfg|
   s['SKIP_INSTALL'] = 'YES'
   s['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
   s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
+  # ★ App Group entitlements（默认不挂）★
+  # 见文件顶部 USE_APP_GROUP 说明。
+  if USE_APP_GROUP
+    s['CODE_SIGN_ENTITLEMENTS'] = 'legal/DayEchoWatchApp.entitlements'
+  end
 end
 
 # watch app 依赖 watchOS 版 Kit
@@ -367,6 +402,11 @@ ios_target.build_configurations.each do |cfg|
   s['DEVELOPMENT_TEAM'] = ''
   s['CODE_SIGN_IDENTITY'] = ''
   s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
+  # ★ App Group entitlements（默认不挂）★
+  # 见文件顶部 USE_APP_GROUP 说明。
+  if USE_APP_GROUP
+    s['CODE_SIGN_ENTITLEMENTS'] = 'legal/DayEchoApp.entitlements'
+  end
 end
 
 project.build_configurations.each do |cfg|
