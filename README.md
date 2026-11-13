@@ -128,7 +128,14 @@ ruby legal/gen_xcodeproj.rb   # 生成 Xcode 工程（需 gem install xcodeproj�
 
 ## CI
 
-GitHub Actions 在 `macos-15` / `macos-26` 双 runner 上构建：
+GitHub Actions 在 `macos-15` 单 runner 上构建（2026-11-13 起，原 `macos-15`/`macos-26` 双 runner 已改单 runner）：
+
+> ★ 改单 runner 的原因：GitHub 免费账户 macOS runner 额度按 **10 倍系数**计费，
+> 双 runner 每次 run 实扣约 40 分钟额度，跑到第 5–6 次就撞穿上限，
+> 且账户未绑支付方式时 job **直接不启动**（报 "recent account payments have failed"，实为额度耗尽）。
+> 同时加了 `paths-ignore`（`docs/**`、`research/**`、`*.md`）——
+> 纯文档改动不再触发构建，不再消耗额度。
+
 
 1. SwiftPM 单元测试
 2. 本地化检查
@@ -152,9 +159,9 @@ GitHub Actions 在 `macos-15` / `macos-26` 双 runner 上构建：
 
 | 项 | 值 |
 |----|-----|
-| CI run | `43239551136`（`macos-15` + `macos-26` 双 runner 全绿，各 23 个成功步骤） |
+| CI run | `43239551136`（当时为 `macos-15` + `macos-26` 双 runner 全绿，各 23 个成功步骤；此后已改单 runner） |
 | 产物 | `DayEcho-unsigned.ipa` |
-| 大小 | 92,537 B（macos-15）/ 92,468 B（macos-26） |
+| 大小 | 92,537 B（macos-15）/ 92,468 B（macos-26，双 runner 时期产物） |
 | SHA-256 | `b7aca9cdae8af309b08219ac69f8ed95ba4776a68e4363a02c4f472e6740567c` |
 | 本地路径 | `dist/DayEcho-unsigned.ipa` |
 
@@ -209,6 +216,8 @@ UI 与 Watch 录音链路为最小可用实现，尚未在真机长时间录音�
 - 未做 App Store 上架准备：截图、描述、关键词、审核材料。
 - ~~真机设备构建目前未通过 CI~~ → **已解除**：CI run `43236911252` 双 runner 全绿，
   unsigned `.ipa` 已产出（macos-15: 92,468 B / macos-26: 92,537 B）。
+- **CI 额度**：免费账户 macOS runner 额度已撞穿过（2026-11-13 用满 193.4 挂钟分 ≈ 1,934 计费分），
+  已改单 runner + `paths-ignore` 降低消耗；如需恢复双版本验证，需绑支付方式并设 $5–10 上限。
 - **但 unsigned `.ipa` 不能直接安装**：需要 Apple Developer 账号 + 证书 + Provisioning Profile
   走 Xcode 签名流程。本项目**尚未做过真机安装与长时间录音实测**。
   完整根因分析、逐条证据链与修复记录见 **[`docs/BUILD-BLOCKERS.md`](docs/BUILD-BLOCKERS.md)**。
