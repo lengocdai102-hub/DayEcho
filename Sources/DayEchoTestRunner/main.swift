@@ -44,6 +44,14 @@ try tailSealAndReentrancyTests()
 print("\n[真实传输通道 ACK 语义]")
 try await transferSemanticsTests()
 
+// ★ 时间轴模型层 ★
+//
+// 把「录音段 + 转写 + 抽出的人生事件」锚定到统一时间轴上。
+// 时间戳是录音器直接给出的观测值，不依赖 AI 理解语义 ——
+// 对健忘者/认知障碍用户尤其关键：转写有错也知道那是几点。
+print("\n[时间轴模型层]")
+try timelineTests()
+
 // ★ 时间表达抽取（规则层）★
 //
 // 从口语转写里抽「时间 + 事件」的技术验证第一层：
