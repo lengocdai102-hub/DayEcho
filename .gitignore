@@ -16,3 +16,6 @@ DerivedData/
 # Python
 __pycache__/
 *.pyc
+
+# 子代理调研临时产物
+research/

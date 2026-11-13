@@ -44,6 +44,13 @@ try tailSealAndReentrancyTests()
 print("\n[真实传输通道 ACK 语义]")
 try await transferSemanticsTests()
 
+// ★ 时间表达抽取（规则层）★
+//
+// 从口语转写里抽「时间 + 事件」的技术验证第一层：
+// 时间表达是闭集，纯规则即可，不依赖 AI/端侧模型。
+print("\n[时间表达抽取]")
+TimeExpressionTests.run()
+
 print("\n─────────────────────────────")
 print("通过 \(Suite.passed) / 失败 \(Suite.failed.count)")
 if !Suite.failed.isEmpty {
