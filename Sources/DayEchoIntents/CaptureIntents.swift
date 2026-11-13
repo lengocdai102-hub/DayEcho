@@ -64,37 +64,59 @@ import AppIntents
 /// 这样 intent 类型保持跨 target 可用，同时实际动作永远发生在 App 进程。
 public struct StartCaptureIntent: AudioRecordingIntent {
 
+    /// ★ 必须显式 public init() ★
+    ///
+    /// `AppIntent` 是 public protocol，编译器要求实现类型的
+    /// 无参构造器也必须是 public —— 否则报：
+    ///   "initializer 'init()' must be declared public because it
+    ///    matches a requirement in public protocol 'AppIntent'"
+    ///
+    /// 隐式合成的 init 是 internal ⇒ 必须手写。
+    public init() {}
+
     public static var title: LocalizedStringResource = "开始抓拍"
 
     public static var description = IntentDescription("开始一次抓拍录音，说完自动停止。")
 
-    /// ★ 录音时长上限（秒）★
-    ///
-    /// 这里必须与 `CaptureSession.maxDuration` 一致
-    /// —— intent 是给系统看的「预计录音多久」，
-    /// 真实封条由状态机决定，两者不一致会让系统提前收权限。
-    public static var maxDurationSeconds: Int { 120 }
+    // ★ 没有 maxDurationSeconds 这种 API ★
+    //
+    // 实测（Apple 官方 DocC）：
+    //   `AudioRecordingIntent` 是一个**纯标记协议**，没有任何成员要求。
+    //   官方文档全文只有一句：
+    //   "Adopt this protocol to create an app intent for audio recording
+    //    functionality and tell the system that your app records audio.
+    //    As a result of this intent, the system displays an audio recording
+    //    indicator."
+    //
+    // ⇒ 录音时长完全由我们自己的 `CaptureSession` 状态机控制
+    //    （120 秒硬上限 + 6 秒静音提前封条），
+    //    不需要、也无法通过 intent 声明给系统。
+    //
+    // ★ 之前这里写过一个 `maxDurationSeconds`，是杜撰的 API ★
+    // —— 查官方 DocC 时 `audiorecordingintent/maxdurationseconds` 返回 NOT FOUND。
+    //    编译能过是因为它只是普通的 static var，没有任何协议要求它。
+    //    ⇒ 这类错误只有查官方文档才能发现，编译器不会告诉你。
 
-    /// ★ 实际执行者注册表 ★
-    ///
-    /// ★ 为什么需要它 ★
-    ///
-    /// intent 类型住在 framework 里，framework 不能引用 App target 的类型。
-    /// 而 Control Widget 触发的 intent 必须真正驱动 App 进程里的录音。
-    ///
-    /// ⇒ App 启动时把自己的执行者注册进来，
-    /// intent 的 perform 只负责查表调用。
-    ///
-    /// ★ 线程安全 ★
-    ///
-    /// App Intent 的 perform 可能不在主线程，
-    /// 而注册发生在 App 启动（主线程）⇒ 用锁保护。
-    public enum Action {
-        /// 开始一次抓拍。返回是否真的开始了。
-        public static var start: (@Sendable () -> Bool)?
-        /// 停止当前抓拍。
-        public static var stop: (@Sendable () -> Void)?
-    }
+    // ★ 实际执行者注册表 ★
+    //
+    // ★ 为什么需要它 ★
+    //
+    // intent 类型住在 framework 里，framework 不能引用 App target 的类型
+    // （framework 不依赖 App，方向反了）。
+    // 而 Control Widget 触发的 intent 必须真正驱动 App 进程里的录音。
+    //
+    // ⇒ App 启动时把自己的执行者注册进来，
+    //   intent 的 perform 只负责查表调用。
+    //
+    // ★ 线程安全 ★
+    //
+    // App Intent 的 perform 可能不在主线程，
+    // 而注册发生在 App 启动（主线程）⇒ 用锁保护。
+    //
+    // ★ 两个 intent 共用这一套注册表 ★
+    //
+    // 它们描述的是同一次抓拍的两端（开始/停止），
+    // 拆成两套会出现「停止的执行者没注册」这种难查的问题。
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var _start: (@Sendable () -> Bool)?
@@ -123,16 +145,42 @@ public struct StartCaptureIntent: AudioRecordingIntent {
         return _stop
     }
 
-    /// 后台执行模式（watchOS 26+）
+    /// ★ 后台执行模式（watchOS 26+）★
+    ///
+    /// ★ 为什么整个属性都要带 @available ★
+    ///
+    /// `IntentModes` 这个**类型本身**是 iOS/watchOS 26 才新增的。
+    /// 在属性内部写 `if #available(watchOS 26.0, *)` 是不够的 ——
+    /// 编译器在解析属性签名时就要解析 `IntentModes` 这个类型，
+    /// 旧 SDK 上直接报 "cannot find type 'IntentModes' in scope"。
+    ///
+    /// ⇒ 必须把 @available 打在属性声明上。
+    ///
+    /// ★ 为什么需要它 ★
+    ///
+    /// 官方 `openAppWhenRun` 已废弃
+    /// （"This property is deprecated. Use `supportedModes` instead."）。
+    /// 且设 `openAppWhenRun = true` 时官方明确说
+    /// "generates an error if the app intent runs in an app extension"，
+    /// 而 Control Widget 的动作正是跑在 App Intent 体系里 ⇒ 绝不能用它。
+    ///
+    /// ★ 为什么是 .background ★
+    ///
+    /// 表盘一键抓拍不能把 App 拉到前台 ——
+    /// 用户在表盘上点一下，结果整个 App 弹出来，体验就废了。
+    /// ⇒ 必须在后台执行。
+    @available(watchOS 26.0, iOS 26.0, *)
     public static var supportedModes: IntentModes {
-        if #available(watchOS 26.0, *) {
-            return .background
-        }
-        return .foreground
+        .background
     }
 
     public func perform() async throws -> some IntentResult {
-        let started = StartCaptureIntent.startAction()?() ?? false
+        // ★ 执行者可能没注册 ★
+        //
+        // Control Widget 所在进程里，App 可能还没起来，
+        // ⇒ 执行者为 nil。此时静默返回，不抛错 ——
+        // 抛错会让系统弹一个看不懂的错误框，用户体验更差。
+        _ = StartCaptureIntent.startAction()?() ?? false
         return .result()
     }
 }
@@ -146,19 +194,32 @@ public struct StartCaptureIntent: AudioRecordingIntent {
 /// 录音最长也在 120 秒硬上限封条。
 public struct StopCaptureIntent: AudioRecordingIntent {
 
+    /// ★ 必须显式 public init() ★
+    /// 理由同 StartCaptureIntent：AppIntent 是 public protocol。
+    public init() {}
+
     public static var title: LocalizedStringResource = "停止抓拍"
 
     public static var description = IntentDescription("停止当前的抓拍录音。")
 
+    /// ★ 后台执行模式（watchOS 26+）★
+    ///
+    /// 理由同 `StartCaptureIntent.supportedModes`：
+    /// `IntentModes` 类型本身是 26.0 才有的，
+    /// 属性声明必须整体带 @available。
+    @available(watchOS 26.0, iOS 26.0, *)
     public static var supportedModes: IntentModes {
-        if #available(watchOS 26.0, *) {
-            return .background
-        }
-        return .foreground
+        .background
     }
 
     public func perform() async throws -> some IntentResult {
-        StopCaptureIntent.stopAction()?()
+        // ★ 执行者注册在 StartCaptureIntent 上 ★
+        //
+        // 两个 intent 共用一套注册表（它们描述的是同一次抓拍的两端）。
+        // 之前写成 `StopCaptureIntent.stopAction()` ——
+        // 而 `stopAction()` 是定义在 StartCaptureIntent 上的
+        // ⇒ 报 "type 'StopCaptureIntent' has no member 'stopAction'"。
+        StartCaptureIntent.stopAction()?()
         return .result()
     }
 }

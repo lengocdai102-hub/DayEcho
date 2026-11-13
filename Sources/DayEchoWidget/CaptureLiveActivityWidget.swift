@@ -1,6 +1,13 @@
 import Foundation
 import WidgetKit
 import SwiftUI
+// ★ 必须 import ActivityKit ★
+//
+// `ActivityAttributes` / `ActivityConfiguration` / `DynamicIsland`
+// 全部来自 ActivityKit，不是 WidgetKit。
+// 漏掉它 ⇒ 报 "cannot find type 'ActivityAttributes' in scope"
+//        报 "cannot find 'ActivityConfiguration' in scope"
+import ActivityKit
 
 // MARK: - iOS Widget Extension（Live Activity 界面）
 //

@@ -19,9 +19,33 @@ FileUtils.rm_rf(PROJ_PATH)
 project = Xcodeproj::Project.new(PROJ_PATH)
 
 IOS_MIN = '17.0'
-# watchOS 11 起支持 AVAudioSession 的 .allowBluetooth（蓝牙麦克风），
-# 对全天录音是实打实的需求。竞品 Auday 同样要求 watchOS 11。
-WATCH_MIN = '11.0'
+# watchOS 26 起支持 Control Widget（表盘上真正的一键动作按钮）
+# 与 AppIntent.supportedModes（后台执行）。
+#
+# ★ 为什么从 11 提到 26 ★
+#
+# 阶段 2.1 核实（Apple 官方 DocC 实测）：
+#   - ControlWidgetButton / StaticControlConfiguration → watchOS 26.0
+#   - AppIntent.supportedModes / IntentModes        → watchOS 26.0
+#
+# ★ 为什么必须整体统一，不能只给 extension 提 ★
+#
+# watchOS 的 Widget Extension 嵌在 watch App 的 PlugIns/ 里，
+# extension 的部署目标**不能高于**宿主 app。
+# 若 watch App 还是 11 而 widget 是 26 ⇒ 装不上 / 编译报错。
+#
+# ★ 用户设备兼容性 ★
+#
+# Apple Watch Series 12 支持 watchOS 26/27 ⇒ 目标用户设备完全覆盖。
+# watchOS 11–25 的用户拿不到「表盘一键抓拍」，这是 V1 的已知取舍：
+# 宁可让目标用户拿到完整功能，也不要做一个「所有设备都能装，
+# 但核心按钮在老系统上点不出来」的半成品。
+#
+# ★ 降级入口仍保留 ★
+#
+# watch App 内的界面入口不依赖 Control Widget，
+# 老系统用户仍可从 App 内启动抓拍（只是多一步）。
+WATCH_MIN = '26.0'
 BUNDLE_ID = 'com.dayecho.app'
 WATCH_BUNDLE_ID = 'com.dayecho.app.watchkitapp'
 
