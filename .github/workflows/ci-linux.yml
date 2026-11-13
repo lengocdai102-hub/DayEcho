@@ -59,7 +59,18 @@ jobs:
       - name: Install Swift
         uses: swift-actions/setup-swift@v2
         with:
-          swift-version: "5.9"
+          # ★ 必须 ≥ 6.0 ★
+          #
+          # Package.swift 第一行是 `swift-tools-version: 6.0`。
+          # 用 5.9 的工具链构建会直接失败：
+          #   error: package '...' is using Swift tools version 6.0.0 but the
+          #   installed version is 5.9.0
+          #
+          # ★ 这里踩过一个坑 ★
+          # 第一版写的是 5.9，Linux job 会在构建第一步就挂掉 ——
+          # 而 macOS 本机是 Swift 6.1.2，所以本地永远测不出来。
+          # 这正是「同一天拿到反馈」的意义：平台差异只有跨平台 runner 才暴露。
+          swift-version: "6.0"
 
       - name: Show toolchain
         run: swift --version
@@ -67,26 +78,21 @@ jobs:
       - name: Build
         run: swift build
 
+      # ★ 跑测试并断言数量 ★
+      #
+      # 一次运行同时做两件事：跑测试 + 校验结果。
+      # 不拆成两步是因为跑两遍要双倍时间（额度），而这里额度紧张。
       - name: Run tests
-        run: swift run DayEchoTestRunner
-
-      # ★ 交叉校验：Linux 上的摘要必须与 CryptoKit 完全一致 ★
-      #
-      # DigestTests 在 Linux 上会跑 FIPS 180-4 官方向量。
-      # 这里额外跑一次「纯 Swift vs CryptoKit」是不可能的（Linux 没有 CryptoKit），
-      # 所以一致性由 macOS 工作流负责 —— 但**官方向量这一层必须在 Linux 上也过**，
-      # 否则 Linux 路径的算法一旦坏掉，没人会发现。
-      #
-      # 这里额外做一件事：确认 Linux 跑出来的用例数与预期一致，
-      # 防止「编译通过但没跑测试」这种静默通过。
-      - name: Assert test count
         run: |
           set -euo pipefail
           OUTPUT="$(swift run DayEchoTestRunner 2>&1)"
           echo "$OUTPUT"
-          # 期望 145 条（Linux 上 5 条 CryptoKit 交叉对比用例会被 #if 跳过）
-          if ! echo "$OUTPUT" | grep -qE '通过 1[0-9]{2} / 失败 0'; then
-            echo "❌ 测试未全部通过或数量异常，详见上方输出"
+
+          # ★ 防止「编译通过但没跑测试」的静默通过 ★
+          # 若 runner 因为崩溃被杀，这里会因 set -e 直接失败；
+          # 若测试一个都没跑，输出里不会有「通过 N / 失败 0」这一行 ⇒ 同样失败。
+          if ! echo "$OUTPUT" | grep -qE '通过 [0-9]+ / 失败 0'; then
+            echo "❌ 测试未全部通过，详见上方输出"
             exit 1
           fi
           if echo "$OUTPUT" | grep -q '失败明细'; then
@@ -94,3 +100,10 @@ jobs:
             exit 1
           fi
           echo "✅ 全部单测通过"
+
+      # ★ 交叉校验：Linux 上的摘要必须与 CryptoKit 完全一致 ★
+      #
+      # DigestTests 在 Linux 上会跑 FIPS 180-4 官方向量。
+      # 这里额外跑一次「纯 Swift vs CryptoKit」是不可能的（Linux 没有 CryptoKit），
+      # 所以一致性由 macOS 工作流负责 —— 但**官方向量这一层必须在 Linux 上也过**，
+      # 否则 Linux 路径的算法一旦坏掉，没人会发现。

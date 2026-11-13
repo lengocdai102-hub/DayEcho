@@ -305,7 +305,19 @@ enum PlistAudit {
 // exit() 会绕过 Swift 的 stdout 缓冲，导致 print 的内容全部丢失
 // （表现就是「跑一下什么都没打印，退出码还是 0」）——
 // 这会让 CI 里的审计形同虚设。用 fflush + 明确的退出码。
+//
+// ★ 为什么这里要条件编译 ★
+//
+// `exit()` 在 Darwin 上来自 Darwin/Glibc，在 Linux 上来自 Glibc。
+// 原来写的是 `import Darwin` —— 这在 Linux 上根本不存在，
+// 会让 `swift build` 在 Linux 上**整个失败**（不是这个 target 失败，是全包失败）。
+//
+// 而这个 target 只是审计工具，与平台无关 ⇒ 条件导入即可。
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 let code = PlistAudit.run()
 fflush(stdout)
 exit(code)
