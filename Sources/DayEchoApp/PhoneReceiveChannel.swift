@@ -60,7 +60,12 @@ public final class PhoneReceiveChannel: NSObject, WCSessionDelegate, @unchecked 
 
         // ① 立刻落盘到沙盒 —— 必须在回调返回前完成
         let incoming = file.fileURL
-        let meta = file.metadata
+
+        // ★ `WCSessionFile.metadata` 的类型是 `[String: Any]?`（可选）★
+        //
+        // 系统不保证一定带元数据 —— 缺失时按空字典处理，
+        // 后面每个字段都有 `??` 兜底，不会崩。
+        let meta = file.metadata ?? [:]
 
         let fileName = (meta["fileName"] as? String) ?? incoming.lastPathComponent
         let expectedSHA = (meta["sha256"] as? String) ?? ""
