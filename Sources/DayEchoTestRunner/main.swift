@@ -52,6 +52,14 @@ try await transferSemanticsTests()
 print("\n[时间轴模型层]")
 try timelineTests()
 
+// ★ 提醒候选层 ★
+//
+// 把抽出的人生事件转成「可写入系统提醒的候选」。
+// 核心原则：误报比漏报更危险 —— 对健忘者，多一条乱写的提醒
+// 会训练他忽略提醒，直接摧毁唯一有效的提示渠道。
+print("\n[提醒候选层]")
+try reminderCandidateTests()
+
 // ★ 时间表达抽取（规则层）★
 //
 // 从口语转写里抽「时间 + 事件」的技术验证第一层：
