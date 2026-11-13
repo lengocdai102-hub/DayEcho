@@ -157,6 +157,11 @@ final class WatchRecorder: NSObject, ObservableObject {
             clock = SegmentClock(sessionStart: startedAt,
                                  segmentDuration: TimeInterval(segmentSeconds))
 
+            // ★ 重置语音活动检测器 ★
+            // 上一场录音结束时若正处于语音态，不重置的话
+            // 这一场刚开始就会被判成「已在说话」⇒ 静音窗口永远不启动。
+            voiceDetector.reset()
+
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .default, options: [.allowBluetooth])
             try session.setActive(true)
@@ -260,6 +265,21 @@ final class WatchRecorder: NSObject, ObservableObject {
 
     // MARK: 分段
 
+    /// ★ 语音活动检测器（阶段 2.1）★
+    ///
+    /// 用 `peakPower` 而不是 `averagePower`：语音是瞬态的，
+    /// 均值会被拉低，导致说话中也判成静音。
+    private var voiceDetector = VoiceActivityDetector.Detector()
+
+    /// ★ 语音活动变化回调（true = 进入语音，false = 退出语音）★
+    ///
+    /// 由 `WatchCaptureCoordinator` 挂上，用来刷新 `CaptureSession.lastVoiceAt`。
+    /// 没有这个回调 ⇒ 静音收尾通道不工作。
+    var onVoiceActivity: ((Bool) -> Void)?
+
+    /// 当前音量（dBFS），用于 UI 显示电平。
+    var onVoiceLevel: ((Float) -> Void)?
+
     private func startTimer() {
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
@@ -275,6 +295,24 @@ final class WatchRecorder: NSObject, ObservableObject {
         guard let recorder else { return }
         recorder.updateMeters()
         elapsed = recorder.currentTime
+
+        // ★ 语音活动检测（阶段 2.1）★
+        //
+        // `CaptureSession` 的「静音 6 秒自动封条」通道依赖这个信号。
+        // 没有它 ⇒ 静音收尾永远不会触发 ⇒ 每次抓拍都录满 120 秒硬上限。
+        //
+        // 注意用 `peakPower`（峰值）而不是 `averagePower`（均值）：
+        // 语音是瞬态的，均值会被拉低，导致说话中也判成静音。
+        let peak = recorder.peakPower(forChannel: 0)
+        let wasSpeech = voiceDetector.isSpeech
+        let nowSpeech = voiceDetector.update(db: peak) == .speech
+        if nowSpeech && !wasSpeech {
+            // 刚从静音进入语音 ⇒ 刷新静音计时锚点
+            onVoiceActivity?(true)
+        } else if !nowSpeech && wasSpeech {
+            onVoiceActivity?(false)
+        }
+        onVoiceLevel?(peak)
 
         // 到点封段：停止 → 封存 → 重新开新段
         if elapsed >= TimeInterval(segmentSeconds) {

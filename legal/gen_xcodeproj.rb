@@ -273,11 +273,20 @@ watch_target.add_dependency(watch_kit_target)
 watch_target.frameworks_build_phase.add_file_reference(watch_kit_target.product_reference)
 
 # watch app 的业务源码（SwiftUI @main 入口就在这里）
-watch_files = %w[
-  Sources/DayEchoWatchApp/WatchApp.swift
-  Sources/DayEchoWatchApp/WatchTransferChannel.swift
-  Sources/DayEchoWatchApp/WatchSessionCoordinator.swift
-]
+#
+# ★ 用 glob 自动收集，不要手写枚举 ★
+#
+# 理由与 Kit target 一样：
+# 手写枚举时新增了 CaptureIntent.swift 却忘记加进来 ⇒
+#   - SwiftPM 全绿（Kit 是 SwiftPM target）
+#   - Xcode 工程里 DayEchoWatch target 缺这个文件
+#   - 编译 watch app 时报 "cannot find type 'StartCaptureIntent' in scope"
+#
+# 改成 glob 之后，新增文件自动进 target。
+watch_files = Dir.glob(File.join(ROOT, 'Sources/DayEchoWatchApp/**/*.swift'))
+                .map { |p| p.sub("#{ROOT}/", '') }
+                .sort
+raise '★ DayEchoWatchApp 源文件为空 —— glob 失败？' if watch_files.empty?
 watch_group = project.new_group('DayEchoWatchApp', 'Sources/DayEchoWatchApp')
 watch_files.each do |f|
   path = File.join(ROOT, f)
@@ -328,11 +337,10 @@ embed_phase.files.each do |bf|
   bf.settings = { 'ATTRIBUTES' => ['RemoveHeadersOnCopy'] }
 end
 
-app_files = %w[
-  Sources/DayEchoApp/DayEchoApp.swift
-  Sources/DayEchoApp/ContentView.swift
-  Sources/DayEchoApp/PhoneReceiveChannel.swift
-]
+app_files = Dir.glob(File.join(ROOT, 'Sources/DayEchoApp/**/*.swift'))
+                .map { |p| p.sub("#{ROOT}/", '') }
+                .sort
+raise '★ DayEchoApp 源文件为空 —— glob 失败？' if app_files.empty?
 app_group = project.new_group('DayEchoApp', 'Sources/DayEchoApp')
 app_files.each do |f|
   path = File.join(ROOT, f)
@@ -415,6 +423,205 @@ project.build_configurations.each do |cfg|
 end
 
 # ============================================================
+# 5b. DayEchoIntents —— 共享 intent framework（阶段 2.1）
+# ============================================================
+#
+# ★ 为什么需要它 ★
+#
+# 表盘一键抓拍涉及三个 target：
+#   1. watch App          —— 真正录音（必须 App 进程）
+#   2. watch Widget Ext   —— Control Widget 入口
+#   3. （共用）intent 类型
+#
+# ②里的 Control WidgetButton(action:) 需要引用 ①里用的**同一个** intent 类型，
+# 否则系统调不通（两边是两个不同类型 ⇒ 系统不知道该跑哪个）。
+#
+# ★ 官方依据 ★
+#
+# AppIntent 文档原文：
+#   "Implement this protocol in a new type or existing type in your
+#    app, app extension, framework, or Swift package."
+#
+# ⇒ framework 是官方明确允许的实现位置。
+#
+# ★ 为什么不放进 DayEchoKit ★
+#
+# DayEchoKit 是 SwiftPM target，在 macOS 上也会编译。
+# 而 `AudioRecordingIntent` 的 platforms 是
+#   iOS 18 / iPadOS 18 / Mac Catalyst 18 / macOS 15 / tvOS 18 / visionOS 2 / watchOS 11
+# —— **没有 macOS** ⇒ 放进去会让 `swift build` 直接失败。
+#
+# ⇒ 单独建一个只由 Xcode 编译的 watchOS framework。
+intents_target = project.new_target(:framework, 'DayEchoIntents', :watchos, WATCH_MIN)
+intents_target.build_configurations.each do |cfg|
+  s = cfg.build_settings
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.dayecho.intents'
+  s['PRODUCT_NAME'] = 'DayEchoIntents'
+  s['MARKETING_VERSION'] = '1.0.0'
+  s['CURRENT_PROJECT_VERSION'] = '1'
+  s['SWIFT_VERSION'] = '6.0'
+  s['WATCHOS_DEPLOYMENT_TARGET'] = WATCH_MIN
+  s['TARGETED_DEVICE_FAMILY'] = '4'
+  s['SUPPORTED_PLATFORMS'] = 'watchos watchsimulator'
+  s['SDKROOT'] = 'auto'
+  s['DEFINES_MODULE'] = 'YES'
+  s['SKIP_INSTALL'] = 'YES'
+  s['BUILD_LIBRARY_FOR_DISTRIBUTION'] = 'NO'
+  s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
+  s['CODE_SIGNING_ALLOWED'] = 'NO'
+  s['CODE_SIGNING_REQUIRED'] = 'NO'
+  s['CODE_SIGN_IDENTITY'] = ''
+  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  # ★ App Intents 需要这两个 ★
+  # 没有它们，系统不会扫描并注册本 framework 里的 intent 类型。
+  s['ENABLE_APP_INTENTS_METADATA_GENERATION'] = 'YES'
+  s['APP_INTENTS_ENABLE_FLEXIBLE_MATCHING'] = 'YES'
+  s['APPLICATION_EXTENSION_API_ONLY'] = 'YES'
+end
+
+intents_files = Dir.glob(File.join(ROOT, 'Sources/DayEchoIntents/**/*.swift'))
+                  .map { |p| p.sub("#{ROOT}/", '') }
+                  .sort
+raise '★ DayEchoIntents 源文件为空 —— glob 失败？' if intents_files.empty?
+intents_group = project.new_group('DayEchoIntents', 'Sources/DayEchoIntents')
+intents_files.each do |f|
+  path = File.join(ROOT, f)
+  next unless File.exist?(path)
+  ref = intents_group.new_reference(File.basename(f))
+  intents_target.add_file_references([ref])
+end
+
+# watch App 依赖 intents framework
+watch_target.add_dependency(intents_target)
+watch_target.frameworks_build_phase.add_file_reference(intents_target.product_reference)
+
+# ============================================================
+# 5c. Widget Extensions（阶段 2.1）
+# ============================================================
+#
+# ★ 两个 extension，各管一件事 ★
+#
+# 1. `DayEchoWatchWidget`（watchOS）—— 表盘 Control Widget
+#    点 complication 直接触发 intent，不打开 App。
+#
+# 2. `DayEchoWidget`（iOS）—— Live Activity 的界面
+#    `ActivityConfiguration` 只能在 Widget Extension 中使用。
+#
+# ★ 嵌入方式：PlugIns 目录 ★
+#
+# extension 要放进宿主 app 的 `PlugIns/` 目录。
+# 用 `new_copy_files_build_phase` + `dstSubfolderSpec = 13`（PlugIns）。
+#
+# ★ 为什么 watch extension 放进 watch App 的 PlugIns ★
+#
+# watchOS 的 Widget Extension 属于 **watch App**，不是 iOS App。
+# ⇒ 嵌到 `DayEchoWatch.app/PlugIns/`。
+# 这一点容易搞错：放到 iOS App 里，系统在手表上根本找不到它。
+
+# ---- 5c-1. watchOS Widget Extension ----
+watch_widget_target = project.new_target(:app_extension, 'DayEchoWatchWidget', :watchos, WATCH_MIN)
+watch_widget_target.build_configurations.each do |cfg|
+  s = cfg.build_settings
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = "#{WATCH_BUNDLE_ID}.widget"
+  s['PRODUCT_NAME'] = 'DayEchoWatchWidget'
+  s['MARKETING_VERSION'] = '1.0.0'
+  s['CURRENT_PROJECT_VERSION'] = '1'
+  s['SWIFT_VERSION'] = '6.0'
+  s['WATCHOS_DEPLOYMENT_TARGET'] = WATCH_MIN
+  s['TARGETED_DEVICE_FAMILY'] = '4'
+  s['SUPPORTED_PLATFORMS'] = 'watchos watchsimulator'
+  s['SDKROOT'] = 'auto'
+  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  # ★ Widget Extension 的必需标记键 ★
+  s['INFOPLIST_KEY_NSExtensionPointIdentifier'] = 'com.apple.widgetkit-extension'
+  s['CODE_SIGNING_ALLOWED'] = 'NO'
+  s['CODE_SIGNING_REQUIRED'] = 'NO'
+  s['CODE_SIGN_IDENTITY'] = ''
+  s['SKIP_INSTALL'] = 'YES'
+  s['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
+  s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
+  s['ENABLE_APP_INTENTS_METADATA_GENERATION'] = 'YES'
+  # ★ widget extension 只能引用扩展安全的 API ★
+  s['APPLICATION_EXTENSION_API_ONLY'] = 'YES'
+end
+
+watch_widget_files = Dir.glob(File.join(ROOT, 'Sources/DayEchoWatchWidget/**/*.swift'))
+                       .map { |p| p.sub("#{ROOT}/", '') }
+                       .sort
+raise '★ DayEchoWatchWidget 源文件为空 —— glob 失败？' if watch_widget_files.empty?
+watch_widget_group = project.new_group('DayEchoWatchWidget', 'Sources/DayEchoWatchWidget')
+watch_widget_files.each do |f|
+  path = File.join(ROOT, f)
+  next unless File.exist?(path)
+  ref = watch_widget_group.new_reference(File.basename(f))
+  watch_widget_target.add_file_references([ref])
+end
+
+# watch widget extension 依赖 intents framework（引用同一个 intent 类型）
+watch_widget_target.add_dependency(intents_target)
+watch_widget_target.frameworks_build_phase.add_file_reference(intents_target.product_reference)
+
+# ---- 5c-2. iOS Widget Extension（Live Activity 界面）----
+ios_widget_target = project.new_target(:app_extension, 'DayEchoWidget', :ios, IOS_MIN)
+ios_widget_target.build_configurations.each do |cfg|
+  s = cfg.build_settings
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = "#{BUNDLE_ID}.widget"
+  s['PRODUCT_NAME'] = 'DayEchoWidget'
+  s['MARKETING_VERSION'] = '1.0.0'
+  s['CURRENT_PROJECT_VERSION'] = '1'
+  s['SWIFT_VERSION'] = '6.0'
+  s['IPHONEOS_DEPLOYMENT_TARGET'] = IOS_MIN
+  s['TARGETED_DEVICE_FAMILY'] = '1,2'
+  s['SDKROOT'] = 'auto'
+  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  s['INFOPLIST_KEY_NSExtensionPointIdentifier'] = 'com.apple.widgetkit-extension'
+  s['CODE_SIGNING_ALLOWED'] = 'NO'
+  s['CODE_SIGNING_REQUIRED'] = 'NO'
+  s['CODE_SIGN_IDENTITY'] = ''
+  s['SKIP_INSTALL'] = 'YES'
+  s['ENABLE_USER_SCRIPT_SANDBOXING'] = 'YES'
+  s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
+  s['ENABLE_APP_INTENTS_METADATA_GENERATION'] = 'YES'
+  s['APPLICATION_EXTENSION_API_ONLY'] = 'YES'
+end
+
+ios_widget_files = Dir.glob(File.join(ROOT, 'Sources/DayEchoWidget/**/*.swift'))
+                     .map { |p| p.sub("#{ROOT}/", '') }
+                     .sort
+raise '★ DayEchoWidget 源文件为空 —— glob 失败？' if ios_widget_files.empty?
+ios_widget_group = project.new_group('DayEchoWidget', 'Sources/DayEchoWidget')
+ios_widget_files.each do |f|
+  path = File.join(ROOT, f)
+  next unless File.exist?(path)
+  ref = ios_widget_group.new_reference(File.basename(f))
+  ios_widget_target.add_file_references([ref])
+end
+
+# ---- 5c-3. 嵌入 ----
+#
+# watch widget extension → DayEchoWatch.app/PlugIns/
+watch_widget_embed = watch_target.new_copy_files_build_phase('Embed Widget Extensions')
+watch_widget_embed.symbol_dst_subfolder_spec = :plug_ins
+watch_widget_embed.dst_path = ''
+watch_widget_embed.add_file_reference(watch_widget_target.product_reference)
+watch_widget_embed.files.each do |bf|
+  bf.settings = { 'ATTRIBUTES' => ['RemoveHeadersOnCopy'] }
+end
+watch_target.add_dependency(watch_widget_target)
+
+# iOS widget extension → DayEcho.app/PlugIns/
+ios_widget_embed = ios_target.new_copy_files_build_phase('Embed Widget Extensions')
+ios_widget_embed.symbol_dst_subfolder_spec = :plug_ins
+ios_widget_embed.dst_path = ''
+ios_widget_embed.add_file_reference(ios_widget_target.product_reference)
+ios_widget_embed.files.each do |bf|
+  bf.settings = { 'ATTRIBUTES' => ['RemoveHeadersOnCopy'] }
+end
+ios_target.add_dependency(ios_widget_target)
+
+# ============================================================
 # 6. Scheme
 # ============================================================
 # 两个 scheme：
@@ -430,13 +637,18 @@ end
 scheme = Xcodeproj::XCScheme.new
 scheme.add_build_target(kit_target)
 scheme.add_build_target(watch_kit_target)
+scheme.add_build_target(intents_target)
+scheme.add_build_target(watch_widget_target)
 scheme.add_build_target(watch_target)
+scheme.add_build_target(ios_widget_target)
 scheme.add_build_target(ios_target)
 scheme.set_launch_target(ios_target)
 scheme.save_as(PROJ_PATH, 'DayEcho', true)
 
 watch_scheme = Xcodeproj::XCScheme.new
 watch_scheme.add_build_target(watch_kit_target)
+watch_scheme.add_build_target(intents_target)
+watch_scheme.add_build_target(watch_widget_target)
 watch_scheme.add_build_target(watch_target)
 watch_scheme.set_launch_target(watch_target)
 watch_scheme.save_as(PROJ_PATH, 'DayEchoWatch', true)
@@ -447,3 +659,6 @@ puts "ios:   #{ios_target.name}  src=#{ios_target.source_build_phase.files.count
 puts "kit:   #{kit_target.name}  src=#{kit_target.source_build_phase.files.count}"
 puts "watch: #{watch_target.name}  src=#{watch_target.source_build_phase.files.count} res=#{watch_target.resources_build_phase.files.count}"
 puts "wkit: #{watch_kit_target.name}  src=#{watch_kit_target.source_build_phase.files.count}"
+puts "intents: #{intents_target.name}  src=#{intents_target.source_build_phase.files.count}"
+puts "wwidget: #{watch_widget_target.name}  src=#{watch_widget_target.source_build_phase.files.count}"
+puts "iwidget: #{ios_widget_target.name}  src=#{ios_widget_target.source_build_phase.files.count}"

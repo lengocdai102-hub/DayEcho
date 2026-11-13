@@ -90,6 +90,16 @@ try IngestionPipelineTests.run()
 print("\n[SHA-256 交叉校验]")
 DigestTests.run()
 
+// ★ 抓拍会话状态机（阶段 2.1）★
+//
+// 表盘一键抓拍的「自动停止」逻辑全在这里。
+// 真机上状态机写错的表现是「按了没反应」或「停不下来」，
+// 复现极难 ⇒ 全部在 Mac 上用纯逻辑钉死。
+print("\n[抓拍会话状态机]")
+try CaptureSessionTests.run()
+print("\n[语音活动检测]")
+try VoiceActivityDetectorTests.run()
+
 print("\n─────────────────────────────")
 print("通过 \(Suite.passed) / 失败 \(Suite.failed.count)")
 if !Suite.failed.isEmpty {

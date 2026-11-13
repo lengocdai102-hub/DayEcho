@@ -25,9 +25,16 @@ let root = URL(fileURLWithPath: CommandLine.arguments.count > 1
     : FileManager.default.currentDirectoryPath)
 
 // 要检查的目录：这些代码不在 SwiftPM target 里
+//
+// ★ DayEchoWatchWidget 是阶段 2.1 新增的 Widget Extension 目录 ★
+// —— Control Widget 必须编成 .appex，不能塞进 watch App target。
+// 漏掉它 ⇒ 新目录里的代码本地完全不被检查，错误只能等 CI 暴露。
 let targets = [
     "Sources/DayEchoWatchApp",
     "Sources/DayEchoApp",
+    "Sources/DayEchoWatchWidget",
+    "Sources/DayEchoWidget",
+    "Sources/DayEchoIntents",
 ]
 
 var failures: [String] = []

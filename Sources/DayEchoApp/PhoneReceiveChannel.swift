@@ -153,7 +153,37 @@ public final class PhoneReceiveChannel: NSObject, WCSessionDelegate, @unchecked 
     public func session(_ session: WCSession,
                         didReceiveMessage message: [String: Any]) {}
 
+    /// ★ 收到 Watch 的保活请求（阶段 2.1）★
+    ///
+    /// Watch 侧无法启动 Live Activity（平台不提供），
+    /// 所以它发消息过来，由 iPhone 侧起 Live Activity 保活。
     public func session(_ session: WCSession,
-                        didReceiveUserInfo userInfo: [String: Any] = [:]) {}
+                        didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        // ★ key 与 Watch 侧 WatchKeepAliveRequest.payloadKey 保持一致 ★
+        guard let action = userInfo["dayecho.capture.keepalive"] as? String else {
+            return
+        }
+        // 时间戳（可选，用于看端到端延迟）
+        let sentAt = (userInfo["date"] as? TimeInterval)
+
+        Task { @MainActor in
+            if #available(iOS 16.1, *) {
+                switch action {
+                case "start":
+                    let sid = (userInfo["sessionID"] as? String) ?? UUID().uuidString
+                    CaptureKeepAliveManager.shared.start(sessionID: sid)
+                case "stop":
+                    CaptureKeepAliveManager.shared.end()
+                default:
+                    break
+                }
+                if let sentAt {
+                    let latency = Date().timeIntervalSince1970 - sentAt
+                    CaptureKeepAliveManager.shared.lastError = nil
+                    print("[保活] action=\(action) 端到端延迟 \(String(format: "%.0f", latency * 1000))ms")
+                }
+            }
+        }
+    }
     #endif
 }
