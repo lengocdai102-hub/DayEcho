@@ -3,8 +3,16 @@ name: iOS + watchOS Build
 on:
   push:
     branches: [ main ]
+    # ★ 路径过滤：纯文档/研究改动不触发构建 ★
+    # 免费账户额度只有 50 分钟/月，macOS 按 10 倍系数计费。
+    # 需求验证文档的修订频繁且不影响编译，没必要每次都烧一次额度。
+    # 排除 docs/ / research/ 后，文档提交不再消耗 CI 额度。
+    paths-ignore:
+      - 'docs/**'
+      - 'research/**'
+      - '*.md'
   pull_request:
-  workflow_dispatch:
+    workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -14,14 +22,20 @@ concurrency:
 
 jobs:
   build:
-    name: Build (${{ matrix.os }})
-    # macos-14 已被 GitHub 下线；arm64 标签在免费账户上排队 90+ 分钟。
-    # 实测（2026-11-12）：Intel macos-15 / macos-26 秒级可用且 success。
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, macos-26]
-    runs-on: ${{ matrix.os }}
+    name: Build
+    # ★ 为什么只用单 runner（2026-11-13 改）★
+    #
+    # GitHub 免费账户 macOS runner 额度 = 50 分钟/月，且 macOS 按 10 倍系数计费。
+    # 原先 matrix 跑 macos-15 + macos-26 两个 runner，每次 run 实扣约 40 分钟额度，
+    # 跑到第 5-6 次就撞穿上限；因为账户未绑支付方式，job 直接被拒绝启动
+    # （报 "recent account payments have failed" —— 实为额度耗尽，非付款失败）。
+    #
+    # 证据：2026-11-13 之前 5 次 success，之后全部 job-not-started；
+    #       billing/usage 显示 macOS 分钟数 193+，净费用 $0（免费额度内）。
+    #
+    # macos-15 与 macos-26 实测均能编译通过（本仓库用的是公开 API，无版本差异），
+    # 保留双版本的价值不足以吃掉 2 倍额度 ⇒ 改为单 runner。
+    runs-on: macos-15
 
     env:
       # 禁用自动签名：unsigned 构建足以验证编译与测试
@@ -529,6 +543,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: DayEcho-build-${{ matrix.os }}
+          name: DayEcho-build
           path: artifacts/
           retention-days: 7
