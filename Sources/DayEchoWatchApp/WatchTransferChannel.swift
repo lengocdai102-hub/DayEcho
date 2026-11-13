@@ -38,6 +38,41 @@ public final class WatchTransferChannel: NSObject, SegmentTransport, @unchecked 
     private var waiters: [UUID: CheckedContinuation<SegmentTransferResult, Error>] = [:]
     private let waiterLock = NSLock()
 
+
+    /// ★ 反查表键的归一化函数 ★
+    ///
+    /// 登记和查找必须走**同一个**函数，否则键对不上 ⇒ 反查 miss
+    /// ⇒ continuation 永不 resume ⇒ 传输永远挂着。
+    ///
+    /// 要解决两件事：
+    /// 1. `standardizedFileURL` —— 消掉 `./`、`../`、重复斜杠等字面量差异；
+    /// 2. `resolvingSymlinksInPath` —— 解析软链接
+    ///    （macOS/iOS 上 `/var` 是 `/private/var` 的软链接，
+    ///     系统返回的可能是 `/private/var/...`，而我们算出来的是 `/var/...`）。
+    ///
+    /// 只用 `standardizedFileURL` 解决不了软链接；
+    /// 只用 `resolvingSymlinksInPath` 解决不了 `./` `../` 的字面量差异。
+    /// 两个都要。
+    static func normalizedKey(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
+    /// ★ 只做字面量规范化的键（不解析软链接）★
+    ///
+    /// ★ 为什么要有两个键 ★
+    ///
+    /// `resolvingSymlinksInPath` 对**不存在**的路径不解析软链接。
+    /// 而登记和查找发生在不同时刻：
+    /// - 登记时文件还在（刚写完）⇒ 解析成功 ⇒ 键是 `/private/var/...`
+    /// - 查找时文件可能已被移走 ⇒ 解析不出 ⇒ 键又变回 `/var/...`
+    ///
+    /// ⇒ 光靠归一化键仍可能对不上。
+    /// 所以**两种键都登记、查找时两种都试** ——
+    /// 命中任一即可，不依赖「文件当时在不在」。
+    static func literalKey(_ url: URL) -> URL {
+        url.standardizedFileURL
+    }
+
     /// WCSessionFileTransfer 对象 → entryID
     /// ★ 必须维护这张表 ★
     /// `didFinish transfer:error:` 回调只给 WCSessionFileTransfer 对象，
@@ -127,7 +162,11 @@ public final class WatchTransferChannel: NSObject, SegmentTransport, @unchecked 
             // 反查会落空 —— continuation 永不 resume，传输永远挂着。
             // fileURL 是我们自己算的，调用之前就有，所以这个窗口可以彻底消除。
             transferLock.lock()
-            fileURLToEntry[fileURL] = entryID
+            // ★ 两种键都登记 ★
+            // —— 查找时两种都试，避免「文件已被移走导致软链接解析结果不同」
+            //    而反查 miss（miss ⇒ continuation 永不 resume ⇒ 传输永远挂着）。
+            fileURLToEntry[Self.normalizedKey(fileURL)] = entryID
+            fileURLToEntry[Self.literalKey(fileURL)] = entryID
             transferLock.unlock()
 
             let transfer = WCSession.default.transferFile(fileURL, metadata: metadata)
@@ -167,7 +206,13 @@ public final class WatchTransferChannel: NSObject, SegmentTransport, @unchecked 
                                        fileURL: URL?,
                                        error: Error?) {
         transferLock.lock()
-        var entryID = fileURL.flatMap { fileURLToEntry.removeValue(forKey: $0) }
+        var entryID: UUID?
+        if let fileURL {
+            entryID = fileURLToEntry.removeValue(forKey: Self.normalizedKey(fileURL))
+            if entryID == nil {
+                entryID = fileURLToEntry.removeValue(forKey: Self.literalKey(fileURL))
+            }
+        }
         if entryID == nil {
             // 兜底：用 transfer 对象身份查
             entryID = transferToEntry.removeValue(forKey: transferID)

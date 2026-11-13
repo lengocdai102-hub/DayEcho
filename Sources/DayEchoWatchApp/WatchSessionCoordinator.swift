@@ -193,7 +193,14 @@ extension WatchSessionCoordinator: WCSessionDelegate {
         // URL 是反查表的**主键** —— send() 里在调用 transferFile 之前就登记了
         // `fileURL → entryID`，所以回调一到达就能查到对应段，
         // 不存在「登记还没做完回调就到了」的竞态。
-        let fileURL = didFinish.file
+        // ★ 注意类型 ★
+        // `didFinish.file` 的类型是 `WCSessionFile`（不是 URL），
+        // 它有个 `.fileURL` 属性才是真正的 URL。
+        //
+        // ★ 为什么取 `.fileURL` 而不是直接用 `didFinish.file` ★
+        // —— `WCSessionFile` 是个 class，很可能不是 Sendable；
+        // 而 URL 是 Sendable。跨隔离域只传 URL，不传 `WCSessionFile` 本身。
+        let fileURL = didFinish.file.fileURL
 
         // 传输状态流转：同步完成，通道内部有 NSLock 保护
         //
