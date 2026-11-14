@@ -14,6 +14,11 @@ struct DayEchoApp: App {
         // ★ 尽早激活接收端 ★
         // WCSession 激活有延迟，早点激活才能在手表开始传时就已经在监听。
         PhoneReceiveChannel.shared.activate()
+
+        // ★ 阶段 3：启动时消费外部投递的文本，产出待确认候选 ★
+        // Share 扩展 / 快捷指令写进来的载荷必须由主 App 消费 ——
+        // 扩展进程退出即销毁，主 App 是唯一能长期持有这些文本的地方。
+        model.ingestIncomingPayloads()
     }
 
     var body: some Scene {
@@ -63,6 +68,33 @@ final class DayEchoModel: ObservableObject {
     @Published var report: IntegrityReport = IntegrityReport()
     @Published var exportURL: URL?
     @Published var statusMessage: String = ""
+
+    /// ★ 候选账本（阶段 3）★
+    ///
+    /// 持久化所有候选及其确认状态。
+    /// 放在类本体而不是扩展里 —— Swift 扩展不能新增存储属性。
+    let ledger = ReminderLedger()
+
+    /// ★ 正在写入系统提醒的条目（阶段 3）★
+    ///
+    /// ★ 为什么需要这个 ★
+    ///
+    /// 写入 EventKit 是异步的（`await writer.write`）。在写入完成之前，
+    /// 账本里的条目仍然是 `.pending`，卡片也仍然显示着「确认」按钮。
+    /// 如果用户快速点两下，就会向系统写入**两条一模一样的提醒**，
+    /// 而账本只记一条 —— 结果是系统里多出一条用户从没要过的提醒。
+    ///
+    /// 对健忘者来说这是最坏的一类 bug：它会训练用户怀疑「系统又乱提醒我」。
+    ///
+    /// ⇒ 用这个集合做在途锁定：同一条目在写入期间不接受第二次确认。
+    ///
+    /// ★ 同样必须放在类本体里 —— 扩展不能新增存储属性 ★
+    @Published var writingIDs: Set<UUID> = []
+
+    /// 该条目当前是否正在写入
+    func isWriting(_ entry: ReminderLedgerEntry) -> Bool {
+        writingIDs.contains(entry.id)
+    }
 
     private var store: RecordingStore?
 

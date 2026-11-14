@@ -100,6 +100,16 @@ try CaptureSessionTests.run()
 print("\n[语音活动检测]")
 try VoiceActivityDetectorTests.run()
 
+// ★ 阶段 3：草稿 / 账本 / 确认链路 ★
+//
+// 阶段 3 之前，仓库里有「候选」但没有「写入系统的路径」——
+// 候选产出后没有任何下游，测试全绿但用户在 App 里看不到任何提醒。
+// 这组测试把「候选 → 草稿 → 账本 → 确认状态」钉死。
+print("\n[阶段 3：提醒草稿与候选账本]")
+try ReminderDraftTests.run()
+try ReminderLedgerTests.run()
+try Stage3EndToEndTests.run()
+
 print("\n─────────────────────────────")
 print("通过 \(Suite.passed) / 失败 \(Suite.failed.count)")
 if !Suite.failed.isEmpty {

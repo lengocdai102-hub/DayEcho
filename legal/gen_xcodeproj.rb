@@ -251,7 +251,7 @@ watch_target.build_configurations.each do |cfg|
   # 这样 Xcode 才能在 iOS 构建时正确产出并嵌入 watch 变体。
   s['SDKROOT'] = 'auto'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
   # ★ 现代 SwiftUI watch App 的必需标记键
   s['INFOPLIST_KEY_WKApplication'] = 'YES'
   # 依附式手表 App：反向绑定到宿主 iOS App
@@ -413,11 +413,21 @@ ios_target.build_configurations.each do |cfg|
   s['IPHONEOS_DEPLOYMENT_TARGET'] = IOS_MIN
   s['TARGETED_DEVICE_FAMILY'] = '1,2'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
   s['INFOPLIST_KEY_UILaunchScreen_Generation'] = 'YES'
   s['INFOPLIST_KEY_UISupportedInterfaceOrientations'] = 'UIInterfaceOrientationPortrait'
   s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] =
     'DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的设备上。'
+  # ★ 提醒事项权限说明（阶段 3）★
+  #
+  # 没有这一句，系统在弹权限框时只显示 App 名字，
+  # 用户不知道授予后会发生什么 —— 对健忘者尤其糟糕，
+  # 他可能稀里糊涂点了「不允许」，之后整个提醒链路就断了。
+  # 说明写清「只写你确认过的提醒」，让授权是有预期的行为。
+  s['INFOPLIST_KEY_NSRemindersFullAccessUsageDescription'] =
+    'DayEcho 需要写入提醒事项，才能把你确认过的提醒放进系统提醒。你确认后才会写入，随时可以撤销。'
+  s['INFOPLIST_KEY_NSRemindersUsageDescription'] =
+    'DayEcho 需要写入提醒事项，才能把你确认过的提醒放进系统提醒。你确认后才会写入，随时可以撤销。'
   # ★ 已删除 NSHealthShareUsageDescription ★
   # 本项目不接入 HealthKit（仓库里没有任何 HKHealthStore 调用），
   # 声明一个用不到的权限只会让用户在授权弹窗里困惑，
@@ -556,7 +566,7 @@ watch_widget_target.build_configurations.each do |cfg|
   s['SUPPORTED_PLATFORMS'] = 'watchos watchsimulator'
   s['SDKROOT'] = 'auto'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
   # ★ Widget Extension 的必需标记键 ★
   s['INFOPLIST_KEY_NSExtensionPointIdentifier'] = 'com.apple.widgetkit-extension'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
@@ -599,7 +609,7 @@ ios_widget_target.build_configurations.each do |cfg|
   s['TARGETED_DEVICE_FAMILY'] = '1,2'
   s['SDKROOT'] = 'auto'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
   s['INFOPLIST_KEY_NSExtensionPointIdentifier'] = 'com.apple.widgetkit-extension'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
