@@ -249,6 +249,21 @@ Payload/DayEcho.app/
 
 ---
 
+## V1 实施顺序（★ 建议先看这份）
+
+完整路线见 **[`docs/实施顺序-V1降级收敛版.md`](docs/实施顺序-V1降级收敛版.md)**。
+
+| 优先级 | 事项 | 状态 | 关键约束 |
+|---|---|---|---|
+| 🔴 **P0-1** | 端侧转写 `SFSpeechRecognizer` | ❌ 零实现 | Watch 录的是 AAC/44.1kHz，Speech 框架只吃 **16kHz WAV** ⇒ 必须转码 |
+| 🟠 **P0-2** | Watch→App 候选管线打通 | ❌ 未接线 | 录音进库后**从不进候选管线**，转写结果也没有自动入口 |
+| 🟡 **P1** | Share Extension | ❌ 无 target | ⚠️ **免费账号无 App Group ⇒ 扩展与主 App 无法通信** |
+| 🔵 **P2** | `ExtractReminderFromTextIntent` | ❌ 无实现 | 需新建 iOS target（现有 `DayEchoIntents` 是 watchOS） |
+
+**建议只做 P0-1 + P0-2** —— 合起来才是「表盘一键抓拍 → 系统提醒」的完整闭环。
+
+---
+
 ## 构建踩坑记录（浓缩版）
 
 完整版见 [`docs/BUILD-BLOCKERS.md`](docs/BUILD-BLOCKERS.md)。四条最值得记住的：
