@@ -131,7 +131,7 @@ final class WatchSessionCoordinator: NSObject, ObservableObject {
                 WatchRecorder.shared.pumpTransfers()
                 // 立刻排下一次（单任务，不能叠）
                 self.scheduleBackgroundRefresh()
-                // ★ 正确��完成 API：setTaskCompletedWithSnapshot(_:) ★
+                // ★ 正确的完成 API：setTaskCompletedWithSnapshot(_:) ★
                 // 传 false = 不请求新快照（我们不需要界面快照）
                 task.setTaskCompletedWithSnapshot(false)
             }

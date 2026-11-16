@@ -196,7 +196,7 @@ public final class EventKitReminderWriter {
             reminders = list
         case .failure(let reason):
             // ★ 查询失败 ⇒ 不是「没有」★
-            // 状态未知 ⇒ 账本保持原状（不��� pending）。
+            // 状态未知 ⇒ 账本保持原状（不回 pending）。
             return .lookupFailed(reason)
         }
         guard let target = reminders.first(where: { $0.calendarItemIdentifier == identifier }) else {
