@@ -36,6 +36,27 @@ final class PhoneReceiverModel: ObservableObject {
     @Published var lastMessage: String = ""
     @Published var corruptedCount = 0
 
+    /// ★ 转写进度（P0-1）★
+    ///
+    /// 转写是耗时的（要转码 + 离线识别），
+    /// ⇒ 必须让用户看到「正在处理」，否则他会以为 App 卡死，
+    /// 进而以为录音丢了 —— 对健忘者来说这会造成真实的挫败感。
+    @Published var transcriptionState: TranscriptionState = .idle
+
+    /// 转写的对外状态
+    enum TranscriptionState: Equatable {
+        /// 没有待处理的录音
+        case idle
+        /// 正在转写第几段
+        case working(sequence: Int)
+        /// 转写完成，产出几条候选
+        case done(candidateCount: Int, text: String)
+        /// 没听清（不是错误）
+        case skipped(reason: String)
+        /// 失败（原因要说清楚）
+        case failed(reason: String)
+    }
+
     init() {
         let channel = PhoneReceiveChannel.shared
         channel.onSegmentVerified = { [weak self] segment in
@@ -44,6 +65,8 @@ final class PhoneReceiverModel: ObservableObject {
                 self?.corruptedCount = 0
                 // 通知主界面刷新录音库
                 NotificationCenter.default.post(name: .dayEchoSegmentsChanged, object: nil)
+                // ★ P0-1：校验通过的录音段 ⇒ 触发端侧转写 ⇒ 候选 ★
+                self?.transcribe(segment)
             }
         }
         channel.onSegmentCorrupted = { [weak self] name, reason in
@@ -54,11 +77,62 @@ final class PhoneReceiverModel: ObservableObject {
             }
         }
     }
+
+    // MARK: - P0-1：转写接线
+
+    /// ★ 把一个录音段转写成候选 ★
+    private func transcribe(_ segment: AudioSegment) {
+        transcriptionState = .working(sequence: segment.sequence)
+
+        let root = Self.recordingsRoot()
+        let pipeline = TranscriptionPipeline(recordingsRoot: root)
+
+        Task {
+            let url = root.appendingPathComponent(segment.fileName)
+            let outcome = await pipeline.process(
+                segmentURL: url,
+                segmentID: segment.id,
+                occurredAt: segment.startedAt
+            )
+
+            await MainActor.run {
+                switch outcome {
+                case .transcribed(let count, let text):
+                    self.transcriptionState = .done(candidateCount: count, text: text)
+                    if count > 0 {
+                        self.lastMessage = "第 \(segment.sequence) 段已转成 \(count) 条待确认提醒。"
+                    } else {
+                        self.lastMessage = "第 \(segment.sequence) 段听清了，但里面没有带时间的安排。"
+                    }
+                    // ★ 候选变了 ⇒ 通知确认列表刷新 ★
+                    NotificationCenter.default.post(name: .dayEchoCandidatesChanged, object: nil)
+
+                case .noUsableText(let reason):
+                    self.transcriptionState = .skipped(reason: reason)
+                    self.lastMessage = reason
+
+                case .failed(let reason):
+                    self.transcriptionState = .failed(reason: reason)
+                    self.lastMessage = reason
+                }
+            }
+        }
+    }
+
+    /// ★ 录音库根目录 ★
+    ///
+    /// 与 `DayEchoModel` 用同一个根 —— 转写要读的就是录音库里的文件。
+    static func recordingsRoot() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Recordings")
+    }
 }
 
 extension Notification.Name {
     /// 录音库内容发生变化
     static let dayEchoSegmentsChanged = Notification.Name("DayEcho.segmentsChanged")
+    /// ★ 候选账本发生变化（P0-1 转写产出候选）★
+    static let dayEchoCandidatesChanged = Notification.Name("DayEcho.candidatesChanged")
 }
 
 @MainActor

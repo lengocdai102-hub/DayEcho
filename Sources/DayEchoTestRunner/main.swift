@@ -123,6 +123,9 @@ try Stage3Round3FixTests.run()
 //
 // 判定逻辑已下沉到 Kit 层（AccessibilityMetrics），
 // 因此可以在本机（无 Xcode / 无 iOS SDK）真正跑起来。
+print("\n[端侧转写 P0-1]")
+try TranscriptionTests.run()
+
 print("\n[适老化视觉基线]")
 try AccessibilityTests.run()
 
