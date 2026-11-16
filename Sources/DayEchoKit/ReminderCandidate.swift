@@ -38,6 +38,27 @@ public struct ReminderCandidate: Identifiable, Hashable, Sendable {
         case accepted
         /// 用户已拒绝
         case rejected
+        /// ★ 已写入系统、但账本落盘失败 ★
+        ///
+        /// ★ 这是一个「坏」状态，正常流程不该出现 ★
+        ///
+        /// 出现路径：
+        ///   1. EventKit 写入成功（系统里真的有这条提醒了）
+        ///   2. 账本 `markAccepted` 落盘失败（磁盘满 / 目录被占）
+        ///   3. `mutate` 回滚内存 ⇒ 条目回到 pending
+        ///
+        /// ★ 为什么必须单独标出来 ★
+        ///
+        /// 如果停在 pending：用户看到卡片还在「待确认」，再点一次确认
+        /// ⇒ 系统里出现**两条一模一样的重复提醒**。
+        ///
+        /// 所以落盘失败后必须显式标成 orphaned：
+        ///   - 它**不再出现在待确认流**里（不会诱导用户重复点）
+        ///   - 它**不是 accepted**（账本确实没记上，不能假装记上了）
+        ///   - 用户在「已写入」分区能看到它，知道系统里有一条对不上的账
+        ///
+        /// 后续对账（`exists` 检查）可以据此提示用户手动清理。
+        case orphaned
     }
     public let status: Status
 

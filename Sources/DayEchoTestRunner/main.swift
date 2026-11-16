@@ -109,6 +109,7 @@ print("\n[阶段 3：提醒草稿与候选账本]")
 try ReminderDraftTests.run()
 try ReminderLedgerTests.run()
 try Stage3EndToEndTests.run()
+try Stage3FixTests.run()
 
 print("\n─────────────────────────────")
 print("通过 \(Suite.passed) / 失败 \(Suite.failed.count)")

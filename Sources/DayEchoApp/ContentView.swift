@@ -11,6 +11,7 @@ struct ContentView: View {
                 writtenSection
                 archiveSection
                 rejectedSection
+                orphanedSection
                 manualEntrySection
                 integritySection
                 sessionsSection
@@ -90,6 +91,58 @@ struct ContentView: View {
 
     private var rejectedSection: some View {
         RejectedCandidateList(day: Date())
+    }
+
+    // MARK: - 账实不符（异常态 · 需人工核对）
+
+    /// ★ 系统里有提醒、但本地账本没记上的条目 ★
+    ///
+    /// ★ 这是异常态，正常不该出现 ★
+    ///
+    /// 出现原因：写入系统提醒成功后，本地账本落盘失败。
+    /// 这些条目**不在「待确认」里**（不会诱导你重复点），
+    /// 但需要你知道「系统里有一条对不上的账」。
+    private var orphanedSection: some View {
+        Section {
+            if model.orphanedEntries.isEmpty {
+                Text("没有账实不符的记录")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(model.orphanedEntries) { entry in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(entry.fireDate.formatted(date: .omitted, time: .shortened))
+                                .font(.headline)
+                            if entry.isDaily {
+                                Text("· 每天")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Text(entry.title)
+                            .font(.body)
+                        if !entry.sourceQuote.isEmpty {
+                            Text(entry.sourceQuote)
+                                .font(.footnote)
+                                .italic()
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Button {
+                            model.revert(entry)
+                        } label: {
+                            Label("去系统里核对并删除", systemImage: "exclamationmark.triangle")
+                                .frame(minHeight: 44)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+        } header: {
+            Text("账实不符")
+        } footer: {
+            Text("系统里已经写入了提醒，但本地记账失败。这一条不会重复出现在待确认里，需要你到「提醒事项」里手动核对删除。")
+        }
     }
 
     // MARK: - 手动录入（阶段 3 验证入口）

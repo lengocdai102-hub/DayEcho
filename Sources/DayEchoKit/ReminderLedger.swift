@@ -103,6 +103,27 @@ public struct ReminderLedgerEntry: Identifiable, Hashable, Sendable, Codable {
         self.writtenAt = writtenAt
         self.promotedAt = promotedAt
     }
+
+    // MARK: - 归日锚点
+
+    /// ★ 这条记录属于「哪一天」★
+    ///
+    /// ★ 口径：按「用户说这句话的当天」，不是「提醒触发日」★
+    ///
+    /// ★ 为什么必须区分 ★
+    ///
+    /// 「已存档 / 已忽略」分区回答的是「我今天说了什么」，
+    /// 所以归日键必须是 `sourceTime`（说这句话的时刻）。
+    ///
+    /// 如果用 `fireDate`（提醒触发日）：
+    /// 用户今天说「明天八点买牛奶」⇒ fireDate 是明天 ⇒
+    /// 今天在「已忽略」里找不到它，页面又没有日期切换入口
+    /// ⇒ 这条候选等于人间蒸发，用户连后悔都反悔不了。
+    ///
+    /// 兜底：`sourceTime` 缺失（极少数手工构造的条目）时用 `fireDate`。
+    public var dayAnchor: Date {
+        sourceTime ?? fireDate
+    }
 }
 
 // MARK: - 账本
@@ -157,6 +178,20 @@ public final class ReminderLedger: @unchecked Sendable {
     /// ★ 它们仍在 `all` 里 —— 这是「后悔药」的档案 ★
     public var rejected: [ReminderLedgerEntry] {
         all.filter { $0.status == .rejected }
+    }
+
+    /// ★ 账实不符的条目（系统里有提醒，账本没记上）★
+    ///
+    /// ★ 这是「坏」状态，正常流程不该出现 ★
+    ///
+    /// 出现原因：EventKit 写入成功后，账本落盘失败。
+    /// 它们**不在** `pending` 里（不会诱导用户重复确认），
+    /// 也**不在** `accepted` 里（账本确实没记上，不能假装记上了）。
+    ///
+    /// 单独列出来是让用户能看见「系统里有一条对不上的账」，
+    /// 去「提醒事项」里手动核对清理。
+    public var orphaned: [ReminderLedgerEntry] {
+        all.filter { $0.status == .orphaned }
     }
 
     /// 静默存档但尚未被用户提升的条目
@@ -227,9 +262,27 @@ public final class ReminderLedger: @unchecked Sendable {
         }
     }
 
-    /// 去重键
+    /// ★ 去重键 ★
+    ///
+    /// 口径与 `ReminderDraft.dedupeKey` **完全一致**：
+    /// `日|分钟|标题|是否每日重复`
+    ///
+    /// ★ 为什么带 `isDaily` ★
+    ///
+    /// 「每天八点吃药」和「周三八点吃药」标题相同时不是一回事。
+    /// 不带这个区分的话，一次性的「八点吃药」会把每日那条去重掉
+    /// —— 用户结果是**每天都没吃药提醒**。
+    /// 对健忘者来说这是最坏的一类静默丢失。
+    ///
+    /// ★ 为什么用「日」这一段 ★
+    ///
+    /// `Int(timeIntervalSince1970 / 60)` 已经是**自 epoch 的绝对分钟**，
+    /// 本身含日期，跨日差 1440 —— 它单独用就够区分日期。
+    /// 这里额外加一段「日」是为了和草稿侧口径逐字一致，
+    /// 避免两处实现各自漂移。
     static func dedupeKey(_ e: ReminderLedgerEntry) -> String {
-        "\(Int(e.fireDate.timeIntervalSince1970 / 60))|\(e.title)"
+        let day = Int(e.fireDate.timeIntervalSince1970 / 86400)
+        return "\(day)|\(Int(e.fireDate.timeIntervalSince1970 / 60))|\(e.title)|\(e.isDaily)"
     }
 
     /// ★ 标记为已写入系统提醒 ★
@@ -240,6 +293,38 @@ public final class ReminderLedger: @unchecked Sendable {
             e.eventKitIdentifier = eventKitIdentifier
             e.writtenAt = writtenAt
             return true
+        }
+    }
+
+    /// ★ 标记为已写入系统、但账本落盘失败 ★
+    ///
+    /// ★ 这是「坏」状态：系统里有这条提醒，账本里没记上 ★
+    ///
+    /// 存在的唯一理由：**防止用户重复确认，写出两条重复提醒。**
+    /// 它不在待确认流里，用户不会再点它。
+    ///
+    /// - Note: 这是一次「尽力而为」的标记 —— 落盘本身可能依然失败。
+    ///   即使失败，内存状态也已经改成 orphaned（不参与 pending 分区），
+    ///   当前会话内不会再诱导重复写入。
+    @discardableResult
+    public func markOrphaned(id: UUID, eventKitIdentifier: String) -> Bool {
+        queue.sync {
+            guard let idx = entries.firstIndex(where: { $0.id == id }) else { return false }
+            let backup = entries[idx]
+            entries[idx].status = .orphaned
+            entries[idx].eventKitIdentifier = eventKitIdentifier
+            entries[idx].writtenAt = Date()
+            let ok = persistLocked()
+            if !ok {
+                // ★ 落盘失败：内存里保留 orphaned 状态（不回滚）★
+                // 回滚成 pending 才是真的会导致重复写入。
+                // 落盘失败本身由调用方提示用户。
+                entries[idx] = backup
+                entries[idx].status = .orphaned
+                entries[idx].eventKitIdentifier = eventKitIdentifier
+                entries[idx].writtenAt = Date()
+            }
+            return ok
         }
     }
 
@@ -276,14 +361,44 @@ public final class ReminderLedger: @unchecked Sendable {
     /// 保持「写入系统的权力始终在用户手里」这条不变量。
     ///
     /// - Note: 状态从 `.rejected` 回到 `.pending`，并清掉拒绝痕迹。
+    ///
+    /// ★ 恢复前必须检查是否已有同键的 pending 条目 ★
+    ///
+    /// 存在这样一条路径：
+    ///   1. 「八点买牛奶」→ pending 条目 A
+    ///   2. 用户拒绝 A → rejected
+    ///   3. 同一句话被再次摄入（Watch 重传 / Share 扩展再分享）→ 新条目 B pending
+    ///      （因为 `append` 的去重只查 pending，A 是 rejected 不参与）
+    ///   4. 用户恢复 A → A 也变 pending
+    ///
+    /// 此时 A、B 两张一模一样的待确认卡片，都点确认就在系统里写两条重复提醒。
+    ///
+    /// ⇒ 恢复前先查同键 pending；有则**拒绝恢复**（返回 false）。
+    ///   已有 B 在待确认流里，用户看到的就是那条，不必多一张。
     @discardableResult
     public func restoreRejected(id: UUID, at date: Date = Date()) -> Bool {
-        mutate(id: id) { e in
-            guard e.status == .rejected else { return false }
-            e.status = .pending
-            e.promotedAt = date
-            e.eventKitIdentifier = nil
-            e.writtenAt = nil
+        queue.sync {
+            guard let idx = entries.firstIndex(where: { $0.id == id }) else {
+                return false
+            }
+            guard entries[idx].status == .rejected else { return false }
+
+            // ★ 同键 pending 冲突检查 ★
+            let key = Self.dedupeKey(entries[idx])
+            let hasPendingConflict = entries.contains { e in
+                e.id != id && e.status == .pending && Self.dedupeKey(e) == key
+            }
+            if hasPendingConflict { return false }
+
+            let backup = entries[idx]
+            entries[idx].status = .pending
+            entries[idx].promotedAt = date
+            entries[idx].eventKitIdentifier = nil
+            entries[idx].writtenAt = nil
+            guard persistLocked() else {
+                entries[idx] = backup
+                return false
+            }
             return true
         }
     }

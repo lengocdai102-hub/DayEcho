@@ -689,3 +689,260 @@ public enum Stage3EndToEndTests {
         }
     }
 }
+
+// MARK: - ★ 第二轮复审修复的覆盖测试 ★
+
+/// ★ 覆盖 DeepSeek bot 第二轮审查发现的 5 个真实缺陷 ★
+///
+/// A. 归日口径：按「说这句话的当天」，不按「提醒触发日」
+/// B. 恢复已拒绝条目前检查同键 pending
+/// C. 落盘失败 ⇒ orphaned 态 ⇒ 不再诱导重复确认
+/// D. 去重键含 isDaily（每日提醒不会被一次性提醒去重掉）
+public enum Stage3FixTests {
+    public static func run() {
+        let cal = Calendar(identifier: .gregorian)
+        var calTZ = cal
+        calTZ.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let saidToday = calTZ.date(from: DateComponents(
+            year: 2026, month: 11, day: 14, hour: 8, minute: 0))!
+        let firesTomorrow = calTZ.date(from: DateComponents(
+            year: 2026, month: 11, day: 15, hour: 20, minute: 0))!
+
+        // MARK: - A：归日口径
+
+        Suite.case_("A 修复：归日按「说这句话的当天」，不按提醒触发日") {
+            try ReminderLedgerTests.withTempDir { tmp in
+                let ledger = ReminderLedger(override: tmp)
+                // 一条候选：今天说的，但明天才触发
+                let tiered = TieredCandidate(
+                    id: UUID(),
+                    candidate: ReminderCandidate(
+                        title: "买牛奶",
+                        fireDate: firesTomorrow,
+                        sourceQuote: "明天晚上八点买牛奶",
+                        sourceTime: saidToday,
+                        status: .pending),
+                    tier: .active,
+                    source: .watchCapture)
+                _ = ledger.record(tiered)
+
+                guard let entry = ledger.pending.first else {
+                    throw AssertionFailure("记入失败")
+                }
+                // ★ 归日锚点应是「说话当天」= 11-14 ★
+                let anchorDay = calTZ.component(.day, from: entry.dayAnchor)
+                try Suite.equal(anchorDay, 14, "归日锚点应是说话当天(14日)，不是触发日(15日)")
+
+                // ★ 15 日取不到，14 日能取到 ★
+                let on15 = ledger.archived.filter {
+                    calTZ.isDate($0.dayAnchor, inSameDayAs: firesTomorrow)
+                }
+                try Suite.equal(on15.count, 0, "触发日那天不该出现这条")
+            }
+        }
+
+        Suite.case_("A 修复：没有 sourceTime 时兜底用 fireDate") {
+            try ReminderLedgerTests.withTempDir { tmp in
+                let ledger = ReminderLedger(override: tmp)
+                let tiered = TieredCandidate(
+                    id: UUID(),
+                    candidate: ReminderCandidate(
+                        title: "买牛奶",
+                        fireDate: firesTomorrow,
+                        sourceQuote: "买牛奶",
+                        sourceTime: nil,
+                        status: .pending),
+                    tier: .active,
+                    source: .shortcutIntent)
+                ledger.record(tiered)
+                guard let entry = ledger.pending.first else {
+                    throw AssertionFailure("记入失败")
+                }
+                try Suite.isTrue(
+                    calTZ.isDate(entry.dayAnchor, inSameDayAs: firesTomorrow),
+                    "没有 sourceTime 时应兜底用 fireDate")
+            }
+        }
+
+        // MARK: - B：恢复拒绝项的同键冲突
+
+        Suite.case_("B 修复：恢复已拒绝项时若已有同键 pending 则拒绝恢复") {
+            try ReminderLedgerTests.withTempDir { tmp in
+                let ledger = ReminderLedger(override: tmp)
+
+                func makeCandidate() -> TieredCandidate {
+                    TieredCandidate(
+                        id: UUID(),
+                        candidate: ReminderCandidate(
+                            title: "买牛奶",
+                            fireDate: firesTomorrow,
+                            sourceQuote: "晚上八点买牛奶",
+                            sourceTime: saidToday,
+                            status: .pending),
+                        tier: .active,
+                        source: .watchCapture)
+                }
+
+                // 1) A 条目 → pending → 拒绝
+                guard let entryA = ledger.record(makeCandidate()) else {
+                    throw AssertionFailure("记入失败")
+                }
+                ledger.markRejected(id: entryA.id)
+
+                // 2) 同一句话再次摄入 → B 条目 → pending
+                //    （去重只查 pending，A 是 rejected 不参与 ⇒ B 会被记入）
+                let b = ledger.record(makeCandidate())
+                try Suite.isTrue(b != nil, "rejected 的条目不参与去重，同内容应能重新记入")
+                try Suite.equal(ledger.pending.count, 1)
+
+                // 3) 恢复 A ⇒ 必须因为同键 pending 冲突而被拒
+                let restored = ledger.restoreRejected(id: entryA.id)
+                try Suite.isFalse(restored, "已有同键 pending 时必须拒绝恢复")
+                try Suite.equal(ledger.pending.count, 1, "恢复被拒后 pending 数量不变，不会变成 2")
+            }
+        }
+
+        Suite.case_("B 修复：没有冲突时恢复正常") {
+            try ReminderLedgerTests.withTempDir { tmp in
+                let ledger = ReminderLedger(override: tmp)
+                let tiered = TieredCandidate(
+                    id: UUID(),
+                    candidate: ReminderCandidate(
+                        title: "买牛奶",
+                        fireDate: firesTomorrow,
+                        sourceQuote: "晚上八点买牛奶",
+                        sourceTime: saidToday,
+                        status: .pending),
+                    tier: .active,
+                    source: .watchCapture)
+                guard let entry = ledger.record(tiered) else {
+                    throw AssertionFailure("记入失败")
+                }
+                ledger.markRejected(id: entry.id)
+                try Suite.isTrue(ledger.restoreRejected(id: entry.id), "无冲突时应能恢复")
+                try Suite.equal(ledger.pending.count, 1)
+                try Suite.equal(ledger.rejected.count, 0)
+            }
+        }
+
+        // MARK: - C：落盘失败 ⇒ orphaned
+
+        Suite.case_("C 修复：落盘失败后标 orphaned，不再留在待确认流") {
+            try ReminderLedgerTests.withTempDir { tmp in
+                let ledger = ReminderLedger(override: tmp)
+                let tiered = TieredCandidate(
+                    id: UUID(),
+                    candidate: ReminderCandidate(
+                        title: "买牛奶",
+                        fireDate: firesTomorrow,
+                        sourceQuote: "晚上八点买牛奶",
+                        sourceTime: saidToday,
+                        status: .pending),
+                    tier: .active,
+                    source: .watchCapture)
+                guard let entry = ledger.record(tiered) else {
+                    throw AssertionFailure("记入失败")
+                }
+
+                // ★ 模拟 EventKit 已写入、但账本落盘失败 ★
+                ledger.markOrphaned(id: entry.id, eventKitIdentifier: "EK-ORPHAN")
+
+                // ★ 关键：它不在 pending 里 ⇒ 用户不会再点它 ⇒ 不会写第二条 ★
+                try Suite.equal(ledger.pending.count, 0, "orphaned 条目不能留在待确认流")
+                try Suite.equal(ledger.orphaned.count, 1, "orphaned 应能被单独查到")
+                try Suite.equal(ledger.accepted.count, 0, "账本没记上就不能算 accepted")
+                try Suite.isFalse(
+                    ledger.orphaned.first?.eventKitIdentifier == nil,
+                    "orphaned 应保留系统标识，便于人工核对")
+            }
+        }
+
+        Suite.case_("C 修复：orphaned 持久化，重启后仍在异常分区") {
+            try ReminderLedgerTests.withTempDir { tmp in
+                let first = ReminderLedger(override: tmp)
+                let tiered = TieredCandidate(
+                    id: UUID(),
+                    candidate: ReminderCandidate(
+                        title: "买牛奶",
+                        fireDate: firesTomorrow,
+                        sourceQuote: "晚上八点买牛奶",
+                        sourceTime: saidToday,
+                        status: .pending),
+                    tier: .active,
+                    source: .watchCapture)
+                guard let entry = first.record(tiered) else {
+                    throw AssertionFailure("记入失败")
+                }
+                first.markOrphaned(id: entry.id, eventKitIdentifier: "EK-ORPHAN")
+
+                let second = ReminderLedger(override: tmp)
+                try Suite.equal(second.pending.count, 0, "重启后也不能冒出待确认")
+                try Suite.equal(second.orphaned.count, 1, "重启后异常条目仍在")
+            }
+        }
+
+        // MARK: - D：去重键含 isDaily
+
+        Suite.case_("D 修复：每日提醒不被一次性提醒去重掉") {
+            try ReminderLedgerTests.withTempDir { tmp in
+                let ledger = ReminderLedger(override: tmp)
+
+                // 先记一条每日提醒
+                let daily = TieredCandidate(
+                    id: UUID(),
+                    candidate: ReminderCandidate(
+                        title: "八点吃药",
+                        fireDate: firesTomorrow,
+                        isDaily: true,
+                        sourceQuote: "每天八点吃药",
+                        sourceTime: saidToday,
+                        status: .pending),
+                    tier: .active,
+                    source: .watchCapture)
+                ledger.record(daily)
+
+                // 同一天、同标题、同钟点，但是一次性提醒
+                let oneOff = TieredCandidate(
+                    id: UUID(),
+                    candidate: ReminderCandidate(
+                        title: "八点吃药",
+                        fireDate: firesTomorrow,
+                        isDaily: false,
+                        sourceQuote: "八点吃药",
+                        sourceTime: saidToday,
+                        status: .pending),
+                    tier: .active,
+                    source: .watchCapture)
+                let added = ledger.record(oneOff)
+
+                // ★ 关键：不能被去重掉 ★
+                // ★ 否则用户结果是「每天都没吃药提醒」—— 对健忘者是最坏的静默丢失 ★
+                try Suite.isTrue(added != nil, "每日提醒与一次性提醒不应互相去重")
+                try Suite.equal(ledger.pending.count, 2, "两条都该在待确认流里")
+            }
+        }
+
+        Suite.case_("D 修复：同类型同钟点仍然去重") {
+            try ReminderLedgerTests.withTempDir { tmp in
+                let ledger = ReminderLedger(override: tmp)
+                func makeDaily() -> TieredCandidate {
+                    TieredCandidate(
+                        id: UUID(),
+                        candidate: ReminderCandidate(
+                            title: "八点吃药",
+                            fireDate: firesTomorrow,
+                            isDaily: true,
+                            sourceQuote: "每天八点吃药",
+                            sourceTime: saidToday,
+                            status: .pending),
+                        tier: .active,
+                        source: .watchCapture)
+                }
+                ledger.record(makeDaily())
+                let second = ledger.record(makeDaily())
+                try Suite.isTrue(second == nil, "完全相同的每日提醒仍应去重")
+                try Suite.equal(ledger.pending.count, 1)
+            }
+        }
+    }
+}

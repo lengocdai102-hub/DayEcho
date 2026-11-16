@@ -68,7 +68,11 @@ public final class EventKitReminderWriter {
         if #available(iOS 17.0, macOS 14.0, *) {
             return status == .fullAccess || status == .writeOnly
         }
-        return status == .authorized
+        // ★ `.authorized` 在 iOS 17 / macOS 14 已废弃 ★
+        // 老系统（iOS 16 及以下）仍可能返回它。
+        // 直接比 rawValue（EKAuthorizationStatus.authorized == 3），
+        // 避免引用废弃枚举而触发编译警告。
+        return status.rawValue == 3
     }
 
     // MARK: - 写入
@@ -137,21 +141,47 @@ public final class EventKitReminderWriter {
 
     // MARK: - 撤销
 
+    /// ★ 删除一条已写入的系统提醒的结果 ★
+    public enum RemovalOutcome: Equatable {
+        /// ★ 删除成功 ★
+        case removed
+        /// ★ 系统里已经没有这条了（用户自己删了）★
+        ///
+        /// 对账意义：账本仍要跟着回到 pending（系统侧已无此提醒），
+        /// 但这**不是**一次成功的删除动作。
+        case notFound
+        /// ★ 删除真失败了（EventKit 抛错）★
+        ///
+        /// ★ 关键：此时系统里提醒还在 ★
+        /// 账本**不能**回到 pending —— 否则用户再点确认就会写第二条。
+        case failed(String)
+    }
+
     /// ★ 删除一条已写入的系统提醒 ★
     ///
     /// 用户在「提醒事项」里删了它，我们这边也要能删（撤销写入场景）。
+    ///
+    /// ★ 为什么要三态而不是 Bool ★
+    ///
+    /// 「没找到」和「删除失败」在**后果上完全不同**：
+    ///   - 没找到 ⇒ 系统侧已无此提醒 ⇒ 账本回 pending 是对的
+    ///   - 删除失败 ⇒ **系统里那条还在** ⇒ 账本若也回 pending，
+    ///     用户再点一次确认就在系统里多出一条重复提醒
+    ///
+    /// 合并成一个 Bool 就会把这两件事混为一谈。
+    ///
     /// - Parameter identifier: `EKReminder.calendarItemIdentifier`
-    public func remove(identifier: String) async -> Bool {
+    public func remove(identifier: String) async -> RemovalOutcome {
         let predicate = store.predicateForReminders(in: nil)
         let reminders = await fetchReminders(predicate)
         guard let target = reminders.first(where: { $0.calendarItemIdentifier == identifier }) else {
-            return false
+            return .notFound
         }
         do {
             try store.remove(target, commit: true)
-            return true
+            return .removed
         } catch {
-            return false
+            return .failed(error.localizedDescription)
         }
     }
 
