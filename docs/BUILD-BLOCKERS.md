@@ -695,3 +695,98 @@ Please check the 'Billing & plans' section in your settings
 3. ★ **GitHub 上「文档归因」会自我强化** —— 早期把 422 记成账户问题后，
    后续每次都只往账户方向查，真 bug 反而被埋了很久。
 4. ★ **每次 CI 异常都应把原始 annotation 原文贴进文档**，不要写转述。
+
+---
+
+## 十、2026-11-16 晚：仓库转公开后 CI 第一次真跑起来，挖出 6 个真问题
+
+### 10.1 起点：为什么转公开后 CI 才真跑
+
+仓库转公开前，**两条 CI 都从未真正执行过任何 step**。
+11-13 以来每次 run 的 annotation 都是同一句：
+
+```
+The job was not started because recent account payments have failed
+or your spending limit needs to be increased.
+```
+
+注意 Linux runner 也被这句话拒 —— 而 Linux 额度只用了 2 分钟（免费额度 2000）。
+**⇒ 这不是"额度用完"，是账户侧把 runner 调度整个挡住了。**
+
+转公开后（`lengocdai102-hub/DayEcho` → public，MIT License），
+公开仓库的 Actions runner 不计费 ⇒ macOS runner 立刻可用。
+
+### 10.2 挖出的 6 个问题
+
+按发现顺序：
+
+| # | 问题 | 性质 | 影响面 |
+|---|---|---|---|
+| 1 | `workflow_dispatch` 的 job 级 `if` 里用了 `env` | **真 bug** | 所有手动触发 422，且伪造出「账户拒付」的假象 |
+| 2 | `AtomicFile.write` 用 `FileManager.replaceItemAt` | **真 bug**（Linux 坏实现） | 整条持久化链断裂 ⇒ 30 条用例失败 |
+| 3 | `ReminderLedger.entries(on:)` 强行覆盖调用方时区 | **真 bug** | 跨日边界判定错，UTC runner 上挂 20 条 |
+| 4 | `ci-linux.yml` 用 `ubuntu-latest`（已迁移 Ubuntu 26.04） | 环境问题 | setup-swift 不支持 ⇒ job 挂 |
+| 5 | Linux CI 的 `set -e` 吞掉测试输出 | **真 bug** | 失败原因完全看不到 |
+| 6 | ApiAudit 块切分 bug / PlistAudit 规则太粗 | 审计器误报 | 挡住 macOS CI（真业务代码没问题） |
+
+外加 Swift 6 严格并发下的 4 个编译错误（`static var title` 是可变全局状态）。
+
+### 10.3 逐条根因
+
+**#2 AtomicFile（最严重）**
+
+`FileManager.replaceItemAt` 在 **swift-corelibs-foundation（Linux）上是坏实现**：
+目标文件已存在时抛 `NSCocoaErrorDomain Code=4 "The file doesn't exist."`。
+
+失败规律暴露了它：**第一次写成功、第二次写失败**（因为第一次走 `moveItem`，
+之后都走 `replaceItemAt`）。
+
+后果不是"某几条用例挂了"，而是**持久化链整体断**：
+- 账本第二次落盘（确认 / 拒绝 / 提升 / 恢复 / beginWriting / completeWriting）全失败
+  ⇒ `persistLocked()` 返回 false ⇒ 内存回滚 ⇒ 状态没变 ⇒ 连带 22 条失败
+- 录音段索引同样写不进去 ⇒ 保留策略 / 导出 / 送达全失败（8 条）
+
+修法：改用 POSIX `rename(2)`（原子替换，且不要求目标已存在）。
+
+**#3 时区**
+
+`entries(on day:calendar:)` 里写着 `cal.timeZone = .current`
+⇒ 把调用方传入的 calendar 时区**强行覆盖成机器本地时区**。
+
+本机是 UTC+8 ⇒ 恰好过；CI runner 是 UTC ⇒
+20:00 的提醒落到前一天 ⇒ 跨日断言全挂。
+
+而且测试本身也漏传参数（用 Asia/Shanghai 构造日期，却让判定依赖机器时区）。
+
+修法：直接用传入的 calendar；测试显式传 `calTZ`。
+实测 6 个时区（UTC / Asia-Shanghai / New-York 等）全绿。
+
+**#5 set -e 吞输出**
+
+```bash
+OUTPUT="$(swift run DayEchoTestRunner 2>&1)"   # 非零退出时
+echo "$OUTPUT"                                   # ← 这行根本没执行
+```
+
+`set -e` 在赋值那行就杀掉脚本 ⇒ CI 日志只剩 `exit code 1`，
+完全看不出哪条用例挂了。**这直接导致 #2 一开始查不出来。**
+
+修法：显式捕获退出码，先回显输出再判定。
+
+### 10.4 教训
+
+**CI 曾经「红」了 3 天，但那不是真红 —— job 根本没启动。**
+从 run 状态看是 failure，实际是「not started」。
+
+⇒ 判据：**必须看 step 级结果和 annotation，不能只看 run 的 conclusion。**
+⇒ 「有 job 跑过并失败」和「job 被拒」是两件事，日志表现完全不同。
+
+**本机全绿 ≠ 跨平台全绿。**
+#2 #3 两个 bug 在 macOS 上永远测不出来（本机 312/0 全绿）。
+只有真正跑起来的 Linux runner 才暴露。
+
+**审计工具自己也会有 bug。**
+ApiAudit 的块切分漏算了 struct 声明行的 `{` ⇒ 误报 3 个类型缺 `public init()`；
+PlistAudit 的规则只做整文件字符串包含 ⇒ 分不清「传音频」和「传控制信号」
+⇒ 误报 watch 端违规。这两条都是**既存**问题，只是 CI 从未真跑过。
+⇒ 审计器报错时，先验证被审对象本身，再决定改业务还是改工具。
