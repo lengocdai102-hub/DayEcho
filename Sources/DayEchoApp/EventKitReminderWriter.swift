@@ -213,17 +213,25 @@ public final class EventKitReminderWriter {
     /// - Parameter identifier: `EKReminder.calendarItemIdentifier`
     public func remove(identifier: String) async -> RemovalOutcome {
         let predicate = store.predicateForReminders(in: nil)
-        let reminders: [EKReminder]
+        let identifiers: [String]
         switch await fetchReminders(predicate) {
         case .success(let list):
-            reminders = list
+            identifiers = list
         case .failure(let failure):
             // ★ 查询失败 ⇒ 不是「没有」★
             // 状态未知 ⇒ 账本保持原状（不回 pending）。
             return .lookupFailed(failure.message)
         }
-        guard let target = reminders.first(where: { $0.calendarItemIdentifier == identifier }) else {
+        guard identifiers.contains(identifier) else {
             // ★ 这里才是真正的「没有」★
+            return .notFound
+        }
+        // ★ 用标识符重新取对象 ★
+        //
+        // `EKReminder` 不是 Sendable，不能跨 continuation 传，
+        // 所以查询阶段只带标识符回来；删除对象在这里同步取。
+        guard let target = store.calendarItem(withIdentifier: identifier) else {
+            // 刚查到、现在取不到 ⇒ 竞态或已被删除
             return .notFound
         }
         do {
@@ -246,10 +254,8 @@ public final class EventKitReminderWriter {
     public func existence(identifier: String) async -> ExistenceOutcome {
         let predicate = store.predicateForReminders(in: nil)
         switch await fetchReminders(predicate) {
-        case .success(let reminders):
-            return reminders.contains { $0.calendarItemIdentifier == identifier }
-                ? .present
-                : .absent
+        case .success(let identifiers):
+            return identifiers.contains(identifier) ? .present : .absent
         case .failure:
             return .unknown
         }
@@ -287,11 +293,20 @@ public final class EventKitReminderWriter {
     /// 上层据此让账本回 pending ⇒ 用户再点一次确认 ⇒ **重复提醒**。
     ///
     /// ⇒ 这里必须用 Result 把 nil 单独接住。
-    private func fetchReminders(_ predicate: NSPredicate) async -> Result<[EKReminder], LookupFailure> {
+    private func fetchReminders(_ predicate: NSPredicate) async -> Result<[String], LookupFailure> {
         await withCheckedContinuation { continuation in
             store.fetchReminders(matching: predicate) { reminders in
                 if let reminders {
-                    continuation.resume(returning: .success(reminders))
+                    // ★ 只把标识符（String）带出去 ★
+                    //
+                    // `EKReminder` **不是 Sendable**，不能跨 continuation 传
+                    // （Swift 6 严格并发会报：
+                    //    error: sending 'reminders.success' risks causing data races）
+                    //
+                    // ⇒ 这里就地降级成 `calendarItemIdentifier` 字符串数组。
+                    //   需要对象本身的删除操作走 `calendarItem(withIdentifier:)`。
+                    let identifiers = reminders.map(\.calendarItemIdentifier)
+                    continuation.resume(returning: .success(identifiers))
                 } else {
                     // ★ nil = 查询失败，不是「没有」★
                     continuation.resume(returning: .failure(LookupFailure("EventKit 查询提醒列表失败")))
