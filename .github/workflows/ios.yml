@@ -38,6 +38,12 @@ on:
 env:
   # ★ macOS push 自动触发开关 ★
   # 默认 'false' ⇒ push 时整个 job 被跳过（省额度）。
+  #
+  # ★ 已废弃（2026-11-16）★
+  # 这个变量以前只被 job 级 `if` 读，而 **job 级 if 上下文里没有 env** ⇒
+  # 工作流解析失败，连 workflow_dispatch 都触发不了（HTTP 422）。
+  # 现在「是否在 push 上此类」由下面 `on:` 段里注释掉的 push 段落决定；
+  # 需要开启时取消那段注释即可（不要再依赖这个 env）。
   RUN_MACOS_ON_PUSH: 'false'
 
 concurrency:
@@ -50,9 +56,27 @@ jobs:
   build:
     name: Build
     # ★ 跳过条件 ★
-    # 非手动触发（= push）且开关为 false ⇒ 跳过。
-    # 手动触发时不受影响，永远真跑。
-    if: github.event_name == 'workflow_dispatch' || env.RUN_MACOS_ON_PUSH == 'true'
+    # 只允许 workflow_dispatch（手动触发）真跑。
+    #
+    # ★★ 为什么不再用 env.RUN_MACOS_ON_PUSH（2026-11-16 修复）★★
+    #
+    # 原写法 `if: ... || env.RUN_MACOS_ON_PUSH == 'true'` **让整个工作流无法触发**：
+    #   HTTP 422: Invalid Argument - failed to parse workflow:
+    #     (Line: 55, Col: 9): Unrecognized named-value: 'env'.
+    #     Located at position 45 within expression:
+    #     github.event_name == 'workflow_dispatch' || env.RUN_MACOS_ON_PUSH == 'true'
+    #
+    # 根因：GitHub 表达式上下文里 **job 级 `if` 不提供 `env`**。
+    # `env` 在 job/step 的 `env:` 块里可用，但 `if` 求值时只有
+    # github / needs / vars / inputs / strategy / matrix 等上下文。
+    # ⇒ 解析器直接报语法错 ⇒ 连 workflow_dispatch 都被挡住。
+    #
+    # ★ 这同时解释了历史上一批「push 触发后 0 秒失败」的 run：
+    #   它们不是被账户支付拒绝，而是**工作流文件解析失败**（同一个 422）。
+    #
+    # ⇒ 修复：把「要不要在 push 上自动跑」交回 `on:` 段的 push 触发器，
+    #   job 的 `if` 只判断事件类型，不依赖任何上下文变量。
+    if: github.event_name == 'workflow_dispatch'
     # ★ 为什么只用单 runner（2026-11-13 改）★
     #
     # GitHub 免费账户 macOS runner 额度 = 50 分钟/月，且 macOS 按 10 倍系数计费。
