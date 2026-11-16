@@ -92,12 +92,23 @@ jobs:
       # 不拆成两步是因为跑两遍要双倍时间（额度），而这里额度紧张。
       - name: Run tests
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          # ★ 不要用 set -e ★
+          #
+          # `OUTPUT="$(swift run ...)"` 这一行如果程序非零退出，
+          # set -e 会**在 echo 之前**就杀掉整个脚本 ⇒
+          # 测试输出全丢，日志里只剩 "Process completed with exit code 1"，
+          # 完全看不出是哪条用例挂了。
+          # ⇒ 这里只保留 -u / -o pipefail，退出码靠下面的显式判断。
+          set +e
           OUTPUT="$(swift run DayEchoTestRunner 2>&1)"
+          TEST_EXIT=$?
+          set -e
           echo "$OUTPUT"
+          echo "---- 测试进程退出码: $TEST_EXIT ----"
 
           # ★ 防止「编译通过但没跑测试」的静默通过 ★
-          # 若 runner 因为崩溃被杀，这里会因 set -e 直接失败；
+          # 若 runner 因为崩溃被杀，这里会因退出码非 0 直接失败；
           # 若测试一个都没跑，输出里不会有「通过 N / 失败 0」这一行 ⇒ 同样失败。
           if ! echo "$OUTPUT" | grep -qE '通过 [0-9]+ / 失败 0'; then
             echo "❌ 测试未全部通过，详见上方输出"
