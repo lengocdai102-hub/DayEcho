@@ -236,6 +236,16 @@ for f in sources {
         if !inside && l.contains("public struct") {
             inside = true
             current = [l]
+            // ★ 必须把声明行自身的花括号算进 depth ★
+            //
+            // 之前这里没算 ⇒ depth 起点是 0，而 struct 声明行的 `{` 没被计入
+            // ⇒ depth 提前归零 ⇒ 块在遇到第一个 `}` 时就被截断
+            // ⇒ struct 里的 `public init(...)` 落在块外
+            // ⇒ 误报「public struct 且 Codable，但没写 public init()」
+            //
+            // 实测三个类型都有 public init（且无参构造实测成功）：
+            //   CaptureSession / ReminderDraft / TranscriptionResult
+            depth = l.filter { $0 == "{" }.count - l.filter { $0 == "}" }.count
         } else if inside {
             current.append(l)
             depth += l.filter { $0 == "{" }.count
