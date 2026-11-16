@@ -743,10 +743,18 @@ public final class ReminderLedger: @unchecked Sendable {
     /// ★ 按日期取归档条目 ★
     ///
     /// 时间轴「今天说了什么」用。包含 pending / accepted / rejected 全部状态。
+    ///
+    /// ★ 时区：必须用调用方传入的 `calendar` 的时区 ★
+    ///
+    /// 之前这里写的是 `cal.timeZone = .current` —— 把调用方的时区**强行覆盖**掉。
+    /// 后果：调用方传入 `Asia/Shanghai` 的 calendar，判定却按机器当前时区做。
+    /// 本机是 UTC+8 ⇒ 测试恰好通过；CI runner 是 UTC ⇒ 跨日边界的条目被判成别的日子，
+    /// 表现为「账本：按日期取条目 — expected 1, got 0」。
+    ///
+    /// ⇒ `calendar` 参数默认已是 `Calendar.current`（含当前时区），
+    ///    **不需要也不应该**再覆盖时区。
     public func entries(on day: Date, calendar: Calendar = Calendar.current) -> [ReminderLedgerEntry] {
-        var cal = calendar
-        cal.timeZone = .current
-        return all.filter { cal.isDate($0.fireDate, inSameDayAs: day) }
+        all.filter { calendar.isDate($0.fireDate, inSameDayAs: day) }
     }
 
     /// ★ 某段时间内的条目 ★

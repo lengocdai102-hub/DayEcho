@@ -468,8 +468,17 @@ public enum ReminderLedgerTests {
                     title: "取快递", fireDate: other, quote: "提醒我明晚八点取快递",
                     source: .watchCapture, tier: .active, now: now))
 
+                // ★ 必须显式传 calTZ ★
+                //
+                // 本用例的所有日期都用 Asia/Shanghai 构造，
+                // 所以「哪一天」的判定也必须按 Asia/Shanghai 做。
+                // 之前漏传 ⇒ 走默认 `Calendar.current`（= 机器当前时区）：
+                //   - 本机是 UTC+8 ⇒ 恰好通过
+                //   - CI runner 是 UTC ⇒ 跨日边界的 20:00 落到前一天 ⇒ expected 1, got 0
+                // ⇒ 单测悄悄依赖了运行环境时区，是典型的「本机绿、CI 红」陷阱。
                 let sameDay = ledger.entries(on: calTZ.date(from: DateComponents(
-                    year: 2026, month: 11, day: 14, hour: 0, minute: 0))!)
+                    year: 2026, month: 11, day: 14, hour: 0, minute: 0))!,
+                    calendar: calTZ)
                 try Suite.equal(sameDay.count, 1)
                 try Suite.equal(sameDay[0].title, "买牛奶")
             }
