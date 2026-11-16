@@ -91,6 +91,18 @@ jobs:
     # 保留双版本的价值不足以吃掉 2 倍额度 ⇒ 改为单 runner。
     runs-on: macos-15
 
+    # ★ job 级超时（2026-11-16 新增）★
+    #
+    # ★ 为什么加 ★
+    # 2026-11-16 那次 run 在「Build iOS app (simulator)」这一步
+    # 跑了 **45 分钟**后 runner 直接失联：
+    #   "The hosted runner lost communication with the server."
+    # 而且**日志整个丢了**（runner 崩 ⇒ 日志没上传 ⇒ 无法定位）。
+    #
+    # ⇒ 加一个 40 分钟上限：超时会被干净地 cancel，
+    #   日志仍然保留（cancel 不等于 crash）。
+    timeout-minutes: 40
+
     env:
       # 禁用自动签名：unsigned 构建足以验证编译与测试
       CODE_SIGN_IDENTITY: ""
@@ -276,6 +288,20 @@ jobs:
 
       - name: Build iOS app (simulator)
         run: |
+          # ★ 先清磁盘（2026-11-16 新增）★
+          #
+          # ★ 为什么 ★
+          # macOS runner 的可用磁盘约 14 GB，而本工作流会建**5 份**
+          # 独立的 derivedData（iOS Debug / watchOS typecheck / watchOS Debug /
+          # iOS device Release / archive），每份都含完整中间产物。
+          # 2026-11-16 那次 run 在 iOS 构建这步跑满 45 分钟后
+          # runner 失联（"lost communication with the server"），
+          # 典型症状就是磁盘/CPU 被吃光。
+          #
+          # ⇒ 每次编译前清掉上一轮的产物，避免累积。
+          rm -rf "$RUNNER_TEMP"/DerivedData*
+          df -h "$RUNNER_TEMP" | tail -1
+
           xcodebuild \
             -project DayEcho.xcodeproj \
             -scheme DayEcho \
@@ -283,10 +309,17 @@ jobs:
             -configuration Debug \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             build
 
       # ---- 4b. 单独 typecheck watchOS Extension ----
       # 先单独查一遍，错误和 iOS 构建的错误分开报，定位更快。
+      #
+      # ★ 复用 DerivedDataWatch（2026-11-16 改）★
+      # 原来这里用独立的 DerivedDataWatchTypecheck，
+      # 等于把同一份 watchOS 代码**完整编译两遍**，
+      # 白占一份磁盘（macOS runner 只有约 14 GB）也白花时间。
+      # ⇒ 改成和下面的 watchOS build 共用 DerivedDataWatch。
       - name: Typecheck watchOS app
         run: |
           xcodebuild \
@@ -294,8 +327,9 @@ jobs:
             -scheme DayEchoWatch \
             -destination 'generic/platform=watchOS Simulator' \
             -configuration Debug \
-            -derivedDataPath "$RUNNER_TEMP/DerivedDataWatchTypecheck" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedDataWatch" \
             CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             build-for-testing \
             -quiet || {
               echo "::error::watchOS App 类型检查未通过（详见上方日志）"; exit 1;
@@ -313,6 +347,7 @@ jobs:
             -configuration Debug \
             -derivedDataPath "$RUNNER_TEMP/DerivedDataWatch" \
             CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             build
 
       # ---- 6. 真机架构构建（arm64 device）----
@@ -329,6 +364,7 @@ jobs:
             -configuration Release \
             -derivedDataPath "$RUNNER_TEMP/DerivedDataDevice" \
             CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_REQUIRED=NO \
             build
 
@@ -511,6 +547,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/DerivedDataDevice" \
             -archivePath "$RUNNER_TEMP/DayEcho-device.xcarchive" \
             CODE_SIGNING_ALLOWED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             CODE_SIGNING_REQUIRED=NO \
             archive
 
