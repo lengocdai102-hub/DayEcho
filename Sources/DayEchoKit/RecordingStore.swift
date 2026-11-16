@@ -15,31 +15,14 @@ import Foundation
 // 两条实现输出必须逐字节一致（用固定测试向量交叉校验）。
 
 // MARK: - 原子写入
-
-/// 原子写文件：先写临时文件，fsync，再 rename。
-/// rename 在同一文件系统内是原子操作 —— 写入中途崩溃/断电不会留下半截文件。
-public enum AtomicFile {
-    public static func write(_ data: Data, to url: URL) throws {
-        let dir = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let tmp = dir.appendingPathComponent("." + url.lastPathComponent + ".tmp-\(UUID().uuidString)")
-        do {
-            try data.write(to: tmp, options: [.atomic])
-            // 显式 fsync，确保数据真正落盘
-            let fd = try FileHandle(forWritingTo: tmp)
-            try fd.synchronize()
-            try fd.close()
-            if FileManager.default.fileExists(atPath: url.path) {
-                _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
-            } else {
-                try FileManager.default.moveItem(at: tmp, to: url)
-            }
-        } catch {
-            try? FileManager.default.removeItem(at: tmp)
-            throw error
-        }
-    }
-}
+//
+// ★ AtomicFile 已移到独立文件 AtomicFile.swift ★
+//
+// 原来它内嵌在 RecordingStore.swift 顶部，里面用了
+// `FileManager.replaceItemAt` —— 那个 API 在 Linux 的
+// swift-corelibs-foundation 上是坏实现（目标已存在时抛
+// "The file doesn't exist."），会导致整条持久化链断掉。
+// ⇒ 拆到独立文件并改用 POSIX `rename(2)`，详见 AtomicFile.swift 的注释。
 
 // MARK: - 存储错误
 
