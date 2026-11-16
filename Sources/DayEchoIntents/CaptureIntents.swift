@@ -74,9 +74,9 @@ public struct StartCaptureIntent: AudioRecordingIntent {
     /// 隐式合成的 init 是 internal ⇒ 必须手写。
     public init() {}
 
-    public static var title: LocalizedStringResource = "开始抓拍"
+    public static var title: LocalizedStringResource { "开始抓拍" }
 
-    public static var description = IntentDescription("开始一次抓拍录音，说完自动停止。")
+    public static var description: IntentDescription { IntentDescription("开始一次抓拍录音，说完自动停止。") }
 
     // ★ 没有 maxDurationSeconds 这种 API ★
     //
@@ -198,9 +198,9 @@ public struct StopCaptureIntent: AudioRecordingIntent {
     /// 理由同 StartCaptureIntent：AppIntent 是 public protocol。
     public init() {}
 
-    public static var title: LocalizedStringResource = "停止抓拍"
+    public static var title: LocalizedStringResource { "停止抓拍" }
 
-    public static var description = IntentDescription("停止当前的抓拍录音。")
+    public static var description: IntentDescription { IntentDescription("停止当前的抓拍录音。") }
 
     /// ★ 后台执行模式（watchOS 26+）★
     ///

@@ -202,9 +202,9 @@ final class CaptureKeepAliveManager: ObservableObject {
 @available(iOS 16.1, *)
 struct StartCaptureLiveActivityIntent: LiveActivityIntent {
 
-    static var title: LocalizedStringResource = "保持录音中"
+    static var title: LocalizedStringResource { "保持录音中" }
 
-    static var description = IntentDescription("在录音期间保持 Live Activity，防止录音被系统停止。")
+    static var description: IntentDescription { IntentDescription("在录音期间保持 Live Activity，防止录音被系统停止。") }
 
     /// 本次抓拍的 session id
     @Parameter(title: "会话")
@@ -227,9 +227,9 @@ struct StartCaptureLiveActivityIntent: LiveActivityIntent {
 @available(iOS 16.1, *)
 struct StopCaptureLiveActivityIntent: LiveActivityIntent {
 
-    static var title: LocalizedStringResource = "结束录音"
+    static var title: LocalizedStringResource { "结束录音" }
 
-    static var description = IntentDescription("录音结束，关闭 Live Activity。")
+    static var description: IntentDescription { IntentDescription("录音结束，关闭 Live Activity。") }
 
     @MainActor
     func perform() async throws -> some IntentResult {
