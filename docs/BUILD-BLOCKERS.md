@@ -3,7 +3,11 @@
 - **日期**：2026-11-12
 - **仓库**：`lengocdai102-hub/DayEcho`（私有）
 - **本地路径**：`/Users/maike/Desktop/DayEcho`
-- **文档状态**：✅ **全部卡点已解除**。最后一次 CI run `43236911252`（提交 `4090a2e`）双 runner 全绿，unsigned `.ipa` 已产出
+- **文档状态**：🔴 **当前被账户侧阻塞（2026-11-16 查实）**。
+  代码与工作流本身已就绪，但 GitHub Actions 的 macOS runner **当前被账户拒绝启动**。
+  两个独立原因（其中一个是已修的真 bug）详见本文档第九章。
+
+- **历史状态**：✅ 全部卡点已解除。最后一次全绿 CI run `43236911252`（提交 `4090a2e`）双 runner 全绿，unsigned `.ipa` 已产出
 - **文档性质**：已归档的构建踩坑记录 + 回归防线清单
 
 ---
@@ -545,3 +549,149 @@ watch App 关键 Info.plist 键（由 build settings 生成）：
 4. **报错文本的变化是进度指标**。Xcode 的 `ValidateEmbeddedBinary` 会逐条暴露下一个不满足的判据；错误不变 = 当前修复没打中。
 5. **CI 诊断输出容易被日志截断**。打印产物结构时应逐键打印并限定查找路径，避免 `find` 命中多个同名产物取错对象。
 6. 本机只有 Command Line Tools，**没有完整 Xcode / watchOS SDK**，任何需要 watchOS SDK 的验证都必须走 GitHub Actions。
+---
+
+## 九、2026-11-16：为什么现在出不了新包（两个独立原因）
+
+本章记录 2026-11-16 的实测结论。**这一章本身就是一个教训**：
+前 8 章的归因（"账户支付失败"）**是错的**，被一个真实的语法错误掩盖了。
+
+### 9.1 原因一（真 bug，已修）：`workflow_dispatch` 根本触发不了
+
+**症状**
+
+```
+HTTP 422: Invalid Argument - failed to parse workflow:
+  (Line: 55, Col: 9): Unrecognized named-value: 'env'.
+  Located at position 45 within expression:
+  github.event_name == 'workflow_dispatch' || env.RUN_MACOS_ON_PUSH == 'true'
+```
+
+**根因**
+
+GitHub 表达式上下文里，**job 级 `if` 不提供 `env`**。
+
+`env` 在 job/step 的 `env:` 块里确实可用，但 `if` 表达式求值时只有
+`github` / `needs` / `vars` / `inputs` / `strategy` / `matrix` 等上下文。
+⇒ 解析器直接报语法错 ⇒ **连 `workflow_dispatch` 都被挡住**。
+
+**这个 bug 的杀伤力**
+
+它不只是"手动触发失败"，它同时**伪造了账户侧失败的假象**：
+所有 push 触发的 run 也在同一个位置报 422，于是看起来像是
+"账户未绑支付方式，job 被拒启动"（这是当时的归因）。
+
+⇒ ★ **"0～5 秒失败 + 无 step + log not found" 这个判据不唯一**，
+它同时覆盖「账户侧拒绝」和「工作流文件解析失败」。必须看 check-run annotation 才能区分。
+
+**修复**
+
+```yaml
+if: github.event_name == 'workflow_dispatch'
+```
+
+「是否在 push 上自动跑」交回 `on:` 段里已注释掉的 push 触发器，
+job 的 `if` 不再依赖任何上下文变量。
+
+**验证**
+
+- 本地 YAML 解析通过（`yaml.safe_load`）
+- 触发请求不再返回 422，run 被创建并进入 job 执行
+- 提交 `14843c7`
+
+### 9.2 原因二（账户侧，阻塞中）：macOS runner 被账户拒绝启动
+
+修完语法错误后，run 终于能进入 job，但**在 3 秒内失败，0 个 step 执行，无日志**：
+
+```
+The job was not started because recent account payments have failed
+or your spending limit needs to be increased.
+Please check the 'Billing & plans' section in your settings
+```
+
+（来自 check-run annotation `133387962440`，不是猜的。）
+
+**账户实况**
+
+| 项 | 值 |
+|---|---|
+| 计划 | `free` |
+| 仓库可见性 | `private` |
+| 2026-11 已用 macOS runner | 193.35 分钟（gross $11.988，净费 $0） |
+| 免费账户 macOS 额度 | 50 分钟/月（macOS 按 10 倍系数计费） |
+
+**判读**
+
+`grossAmount` 是**标价**，`netAmount = 0` 说明仍在免费额度内。
+⇒ **不是付款失败，是 macOS 私有仓库的额度或支付方式要求触发了拒绝。**
+
+⚠️ **`netAmount = 0` 且仍被拒 ⇒ 单纯"用完额度"解释不了** ——
+需要账户侧确认（绑卡 / 确认消费上限）。
+
+### 9.3 后果：现有 `.ipa` 是过期产物
+
+| 项 | 时间 | 说明 |
+|---|---|---|
+| `dist/DayEcho-unsigned.ipa` | 2026-11-12 22:59 | 构建于 P0-1 端侧转写**之前** |
+| P0-1 端侧转写提交 | 2026-11-16 20:22 (`a0fa37c`) | **晚 4 天** |
+| 旧 ipa 内转写相关文件 | **0 个** | 确实不含 P0-1 功能 |
+
+⇒ ★ **现有 ipa 装到 Watch 上，测不到端侧转写这一整条链路。**
+⇒ 而 Watch App 是依附式 ⇒ 装不了 iPhone 端 ⇒ 连抓拍功能都测不到。
+
+### 9.4 阻断的完整依赖链（为什么「不装 Xcode」这个决定有连带成本）
+
+```
+需要 Watch 上跑 DayEcho
+  └─▶ Watch App 是依附式（WKRunsIndependentlyOfCompanionApp = NO）
+        └─▶ 必须先装 iPhone 端 DayEcho
+              └─▶ 需要一个**已签名**的 .ipa
+                    └─▶ 签名需要 CI 出包（unsigned）
+                          └─▶ CI macOS runner 被账户拒绝（9.2）
+                                └─▶ 绕不开，或改走别的出包通道
+```
+
+⇒ ★ **不装 Xcode 本身没问题**（免签侧载不需要 Xcode），
+   **但「装 iPhone 端 + 免费签名」这条路当前被 CI 额度卡住。**
+
+### 9.5 免费签名下的功能影响（不装 Xcode 的代价，已核实）
+
+**App Group 在 Personal Team 下不可用** ⇒ `SharedContainer` 回退到 `Documents/DayEchoShared`。
+
+核实过回退是**真的实现了**（`Sources/DayEchoKit/SharedContainer.swift`），
+不是只写在注释里。
+
+**核心链路不受影响**：
+
+| 功能 | 免费签名下 | 原因 |
+|---|---|---|
+| 表盘一键抓拍 | ✅ | 不依赖 App Group |
+| Watch → iPhone 传输 | ✅ | 走 `WatchConnectivity`，不共享文件 |
+| 端侧转写（iPhone 端执行） | ✅ | 不依赖 App Group |
+| 录音段落盘 | ✅ | 各端独立沙盒，传输走 WC |
+| 待确认卡片流 | ✅ | 走 `ReminderLedger`（JSON 文件） |
+| Share Extension 投递 | ❌ | 扩展独立沙盒，主 App 读不到 |
+| App Intent 投递 | ❌ | 同上 |
+
+⇒ **本次要测的「表盘抓拍 → 传输 → 端侧转写 → 候选卡片」全链路不依赖 App Group** ⇒ 免费签名够用。
+
+### 9.6 剩下的可选项（每个都标了真实代价）
+
+| # | 方案 | 代价 | 效果 |
+|---|---|---|---|
+| 1 | **GitHub 账户绑卡 + 设月消费上限 $5-10** | 需你操作账户（约 1 分钟） | macOS runner 立刻可用，CI 出包 |
+| 2 | **把仓库转公开** | 你的源码公开（已核实：无凭据文件、无 >3MB 大文件） | 公开仓库的 Actions runner **不计费**，可能直接绕过额度 |
+| 3 | **改用 Codemagic / Bitrise 等第三方 CI** | 需注册账号 | macOS runner 免费额度独立于 GitHub 额度 |
+| 4 | 装本机 Xcode 26.3 自出包 | 40-70 GB 下载 + Intel 2015 机型吃力 | 不依赖任何 CI |
+
+⇒ 推荐 **1**（最快、最不改变现状）；若完全不想绑卡，**2** 成本最低。
+
+### 9.7 本章的通用教训
+
+1. ★ **"job 0～5 秒失败 + 无 step + log not found" 不是账户问题的专属特征** ——
+   工作流文件解析失败（422）会产生完全一样的表象。**必须看 annotation。**
+2. ★ **GitHub 表达式里 `env` 只能在 `env:` 块或 step 级用，不能在 job 级 `if` 里用** ——
+   且这个错误**不会**在 push 触发时报"语法错误"，而是伪装成账户问题。
+3. ★ **GitHub 上「文档归因」会自我强化** —— 早期把 422 记成账户问题后，
+   后续每次都只往账户方向查，真 bug 反而被埋了很久。
+4. ★ **每次 CI 异常都应把原始 annotation 原文贴进文档**，不要写转述。
