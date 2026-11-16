@@ -428,6 +428,21 @@ ios_target.build_configurations.each do |cfg|
     'DayEcho 需要写入提醒事项，才能把你确认过的提醒放进系统提醒。你确认后才会写入，随时可以撤销。'
   s['INFOPLIST_KEY_NSRemindersUsageDescription'] =
     'DayEcho 需要写入提醒事项，才能把你确认过的提醒放进系统提醒。你确认后才会写入，随时可以撤销。'
+  # ★ 语音识别权限说明（P0-1 端侧转写）★
+  #
+  # ★ 为什么现在就要加，即使转写代码还没写 ★
+  #
+  # 权限键是**声明式**的：不加 ⇒ 用户第一次触发转写时，
+  # 系统直接拒绝并**静默失败**（没有任何弹窗解释为什么），
+  # 对健忘者表现为「按了没反应」—— 最伤信任的失败模式。
+  # 提前加好，等转写代码落地时权限弹窗就能正常出现。
+  #
+  # ★ 为什么说明里要写「只在本机」★
+  #
+  # 端侧转写用 `SFSpeechRecognizer` 的 `requiresOnDeviceRecognition = true`，
+  # 音频不出设备。明确写出来，用户授权时知道数据不出机器。
+  s['INFOPLIST_KEY_NSSpeechRecognitionUsageDescription'] =
+    'DayEcho 需要在你的 iPhone 上把你的语音转成文字，用来提取提醒。转写完全在本机进行，录音不会上传。'
   # ★ 已删除 NSHealthShareUsageDescription ★
   # 本项目不接入 HealthKit（仓库里没有任何 HKHealthStore 调用），
   # 声明一个用不到的权限只会让用户在授权弹窗里困惑，

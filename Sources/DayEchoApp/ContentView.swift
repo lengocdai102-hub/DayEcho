@@ -4,6 +4,12 @@ import DayEchoKit
 struct ContentView: View {
     @EnvironmentObject private var model: DayEchoModel
 
+    /// ★ 按钮高度随系统字号缩放 ★
+    ///
+    /// 视力下降的用户会把系统字号调大 —— 那是他们补偿视力的主要手段。
+    /// 按钮不跟着放大 ⇒ 字被裁掉 ⇒ 点不到 ⇒ 直接放弃。
+    @ScaledMetric(relativeTo: .body) private var buttonHeight: CGFloat = 44
+
     var body: some View {
         NavigationStack {
             List {
@@ -26,6 +32,7 @@ struct ContentView: View {
                     } label: {
                         Label("检查", systemImage: "checkmark.shield")
                     }
+                    .accessibleAction("检查", hint: "检查录音传输与文件完整性")
                 }
             }
         }
@@ -68,8 +75,9 @@ struct ContentView: View {
                             model.revert(entry)
                         } label: {
                             Label("撤回这条提醒", systemImage: "arrow.uturn.backward")
-                                .frame(minHeight: 44)
+                                .frame(minHeight: buttonHeight)
                         }
+                        .accessibleAction("撤回这条提醒", hint: "把已写入系统的提醒删掉并放回待确认")
                         .buttonStyle(.bordered)
                     }
                     .padding(.vertical, 6)
@@ -138,15 +146,22 @@ struct ContentView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         if entry.status == .writing {
-                            Text("写入被中断，系统里是否有这条不确定。请到「提醒事项」里看一眼。")
-                                .font(.footnote)
-                                .foregroundStyle(.orange)
+                            // ★ 状态不靠颜色单独承载 ★
+                            // 用橙色只是辅助，图标 + 文字才是主要载体 ——
+                            // 色觉差异用户看不到橙色差异，但仍能读到文字。
+                            Label {
+                                Text("写入被中断，系统里是否有这条不确定。请到「提醒事项」里看一眼。")
+                                    .font(.footnote)
+                            } icon: {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                            }
                         }
                         Button {
                             model.revert(entry)
                         } label: {
                             Label("去系统里核对并删除", systemImage: "exclamationmark.triangle")
-                                .frame(minHeight: 44)
+                                .frame(minHeight: buttonHeight)
                         }
                         .buttonStyle(.bordered)
                     }
@@ -179,6 +194,7 @@ struct ContentView: View {
                     Label("提醒记录文件损坏", systemImage: "exclamationmark.triangle.fill")
                         .font(.headline)
                         .foregroundStyle(.orange)
+                        .accessibilityLabel(Text("提醒记录文件损坏，需要你处理"))
                     Text("原因：\(failure.reason)")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -224,18 +240,20 @@ struct ContentView: View {
                     showingManualEntry = false
                 } label: {
                     Label("加入待确认", systemImage: "plus.circle")
-                        .frame(minHeight: 44)
+                        .frame(minHeight: buttonHeight)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(manualText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibleAction("加入待确认", hint: "把这句手动录入的文字变成一条待确认提醒")
             } else {
                 Button {
                     showingManualEntry = true
                 } label: {
                     Label("手动录入一句话", systemImage: "square.and.pencil")
-                        .frame(minHeight: 44)
+                        .frame(minHeight: buttonHeight)
                 }
                 .buttonStyle(.bordered)
+                .accessibleAction("手动录入一句话", hint: "不用录音，直接打字加一条提醒")
             }
         } header: {
             Text("手动录入")
@@ -319,6 +337,7 @@ struct ContentView: View {
             } label: {
                 Label("导出全部录音", systemImage: "square.and.arrow.up")
             }
+            .accessibleAction("导出全部录音", hint: "把所有录音导出成一个文件")
             if let url = model.exportURL {
                 ShareLink(item: url) {
                     Label("分享导出包", systemImage: "paperplane")

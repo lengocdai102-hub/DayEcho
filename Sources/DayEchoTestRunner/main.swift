@@ -119,6 +119,13 @@ try Stage3FixTests.run()
 print("\n[第三轮审查缺陷修复]")
 try Stage3Round3FixTests.run()
 
+// ★ 适老化视觉基线（P1-3）★
+//
+// 判定逻辑已下沉到 Kit 层（AccessibilityMetrics），
+// 因此可以在本机（无 Xcode / 无 iOS SDK）真正跑起来。
+print("\n[适老化视觉基线]")
+try AccessibilityTests.run()
+
 print("\n─────────────────────────────")
 print("通过 \(Suite.passed) / 失败 \(Suite.failed.count)")
 if !Suite.failed.isEmpty {

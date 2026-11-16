@@ -174,6 +174,29 @@ public final class EventKitReminderWriter {
         case lookupFailed(String)
     }
 
+    /// ★ EventKit 查询失败 ★
+    ///
+    /// ★ 为什么必须是 Error 而不是 String ★
+    ///
+    /// ★ 实测编译错误（swiftc -typecheck）★
+    /// ```
+    /// error: type 'String' does not conform to protocol 'Error'
+    /// ```
+    /// `Result<Success, Failure>` 的 Failure 泛型必须满足 `Error`，
+    /// 而 `String` 不满足 ⇒ **整个文件编译不过**。
+    ///
+    /// ★ 上一轮为什么没发现 ★
+    ///
+    /// 第三轮修复只跑了 `swiftc -parse`（**纯语法**），
+    /// 而 `-parse` **不做类型检查** ⇒ 泛型约束这类语义错误抓不到。
+    /// ⇒ 这条是本轮 App 层 `-typecheck` 才暴露的**真编译错误**，
+    ///    一直藏在 HEAD 里。
+    public struct LookupFailure: Error, CustomStringConvertible {
+        public let message: String
+        public init(_ message: String) { self.message = message }
+        public var description: String { message }
+    }
+
     /// ★ 删除一条已写入的系统提醒 ★
     ///
     /// 用户在「提醒事项」里删了它，我们这边也要能删（撤销写入场景）。
@@ -194,10 +217,10 @@ public final class EventKitReminderWriter {
         switch await fetchReminders(predicate) {
         case .success(let list):
             reminders = list
-        case .failure(let reason):
+        case .failure(let failure):
             // ★ 查询失败 ⇒ 不是「没有」★
             // 状态未知 ⇒ 账本保持原状（不回 pending）。
-            return .lookupFailed(reason)
+            return .lookupFailed(failure.message)
         }
         guard let target = reminders.first(where: { $0.calendarItemIdentifier == identifier }) else {
             // ★ 这里才是真正的「没有」★
@@ -264,14 +287,14 @@ public final class EventKitReminderWriter {
     /// 上层据此让账本回 pending ⇒ 用户再点一次确认 ⇒ **重复提醒**。
     ///
     /// ⇒ 这里必须用 Result 把 nil 单独接住。
-    private func fetchReminders(_ predicate: NSPredicate) async -> Result<[EKReminder], String> {
+    private func fetchReminders(_ predicate: NSPredicate) async -> Result<[EKReminder], LookupFailure> {
         await withCheckedContinuation { continuation in
             store.fetchReminders(matching: predicate) { reminders in
                 if let reminders {
                     continuation.resume(returning: .success(reminders))
                 } else {
                     // ★ nil = 查询失败，不是「没有」★
-                    continuation.resume(returning: .failure("EventKit 查询提醒列表失败"))
+                    continuation.resume(returning: .failure(LookupFailure("EventKit 查询提醒列表失败")))
                 }
             }
         }
