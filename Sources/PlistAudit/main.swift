@@ -128,8 +128,67 @@ enum PlistAudit {
             failures.append("watch 端没有调用 transferFile —— 音频传输必须走系统文件队列")
         }
 
-        if watchImpl.contains("sendMessage(") || watchImpl.contains("transferUserInfo(") {
+        // ★ 4a-2：音频数据不许走 sendMessage / transferUserInfo ★
+        //
+        // 原来的判定是纯字符串包含：
+        //     if watchImpl.contains("sendMessage(") || watchImpl.contains("transferUserInfo(")
+        // ⇒ 只要 watch 端**任何地方**出现这两个 API 就报错。
+        //
+        // ★ 这条规则太粗，会误报 ★
+        // `transferUserInfo` 除了传音频，还有正当用途：传**控制信号**。
+        // 本项目里的实例（阶段2.1 引入，commit 8dd98e1）：
+        //     Sources/DayEchoWatchApp/CaptureIntent.swift
+        //     WatchKeepAliveRequest.requestFromPhone / releaseFromPhone
+        // 它们传的是 `{payloadKey: "start"/"stop", sessionID, date}` 这样的
+        // 几十字节的控制信号，**不是音频**，用 transferUserInfo 完全正确
+        // （而且要求后台可靠投递，恰恰不该用 sendMessage）。
+        //
+        // 音频本身的传输在 `WatchTransferChannel.swift`：
+        //     WCSession.default.transferFile(fileURL, metadata: metadata)
+        // ⇒ 走的是系统后台文件队列，正是规则想要的那个。
+        //
+        // ⇒ 改成：**逐文件、逐调用点，看它所在的函数体里有没有音频数据**。
+        // 判定单位是「函数体」而不是「上下 N 行」——
+        // 用窗口会被同文件里别的类型名干扰
+        // （比如 CaptureIntent.swift 里还有 AudioRecordingIntent，
+        //   名字里就带 audio / recording）。
+        var audioViaMessage = false
+        for fileSrc in watchSrc {
+            let lines = fileSrc.split(separator: "\n").map(String.init)
+            for (idx, line) in lines.enumerated() {
+                let t = line.trimmingCharacters(in: .whitespaces)
+                guard !t.hasPrefix("//"), !t.hasPrefix("///") else { continue }
+                guard t.contains("sendMessage(") || t.contains("transferUserInfo(") else { continue }
+
+                // 向上找最近的函数声明行，确定所属函数
+                var funcStart = idx
+                while funcStart > 0 {
+                    let c = lines[funcStart].trimmingCharacters(in: .whitespaces)
+                    if c.hasPrefix("func ") || c.contains(" func ") { break }
+                    funcStart -= 1
+                }
+                // 向下找函数体结束（缩进回到函数声明行的缩进且含 `}`）
+                let baseIndent = lines[funcStart].prefix { $0 == " " }.count
+                var funcEnd = idx
+                while funcEnd < lines.count {
+                    let l = lines[funcEnd]
+                    let ind = l.prefix { $0 == " " }.count
+                    if ind <= baseIndent, l.contains("}") { break }
+                    funcEnd += 1
+                }
+                let body = lines[funcStart...min(funcEnd, lines.count - 1)].joined(separator: "\n").lowercased()
+                // 函数体里出现音频数据迹象 ⇒ 判违规
+                let audioHints = ["m4a", ".caf", "wav", "pcm", "filedata", "audiofile",
+                                  "recordingfile", "segmentdata", "transferfile"]
+                if audioHints.contains(where: { body.contains($0) }) {
+                    audioViaMessage = true
+                }
+            }
+        }
+        if audioViaMessage {
             failures.append("watch 端用了 sendMessage / transferUserInfo 传音频 —— 有体积限制且会积压内存，必须用 transferFile")
+        } else {
+            print("✓ watch 端未用 sendMessage / transferUserInfo 传音频（仅用于轻量控制信号，音频走 transferFile）")
         }
 
         // 4b. iPhone 端必须立刻 moveItem（回调返回后系统会删临时文件）
