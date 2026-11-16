@@ -194,19 +194,37 @@ public actor SpeechTranscriber {
             }
         }
 
-        // ④ 执行
-        let result = try await run(recognizer: recognizer, request: request)
-
-        // ⑤ 翻译成 Kit 层模型
-        return Self.translate(result, locale: locale, audioSegmentID: audioSegmentID)
+        // ④ 执行（★ 回调内直接转成 Kit 层模型 ★）
+        //
+        // ★ 为什么不在这里转 ★
+        // `SFSpeechRecognitionResult` **不是 Sendable**
+        // ⇒ 在 Swift 6 语言模式下，把它跨 continuation 传出去会报：
+        //     error: sending 'result' risks causing data races
+        //
+        // ⇒ 改成在 recognitionTask 的回调里就地翻译成
+        //   `TranscriptionResult`（Kit 层模型，声明了 Sendable），
+        //   再把它 resume 出去。
+        return try await run(
+            recognizer: recognizer,
+            request: request,
+            locale: locale,
+            audioSegmentID: audioSegmentID
+        )
     }
 
     // MARK: - 私有：执行识别
 
+    /// ★ 在回调内把识别结果翻译成 Kit 层模型 ★
+    ///
+    /// - Note: 返回 `TranscriptionResult`（`Sendable`）而不是
+    ///   `SFSpeechRecognitionResult`（非 Sendable）——
+    ///   后者不能跨 continuation 传递（Swift 6 严格并发）。
     private func run(
         recognizer: SFSpeechRecognizer,
-        request: SFSpeechURLRecognitionRequest
-    ) async throws -> SFSpeechRecognitionResult {
+        request: SFSpeechURLRecognitionRequest,
+        locale: String,
+        audioSegmentID: UUID?
+    ) async throws -> TranscriptionResult {
         try await withCheckedThrowingContinuation { continuation in
             var finished = false
 
@@ -226,7 +244,13 @@ public actor SpeechTranscriber {
 
                 if result.isFinal {
                     finished = true
-                    continuation.resume(returning: result)
+                    // ★ 就地翻译成 Sendable 的 Kit 层模型 ★
+                    let translated = Self.translate(
+                        result,
+                        locale: locale,
+                        audioSegmentID: audioSegmentID
+                    )
+                    continuation.resume(returning: translated)
                 }
             }
 

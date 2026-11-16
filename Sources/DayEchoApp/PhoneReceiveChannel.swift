@@ -165,13 +165,21 @@ public final class PhoneReceiveChannel: NSObject, WCSessionDelegate, @unchecked 
         }
         // 时间戳（可选，用于看端到端延迟）
         let sentAt = (userInfo["date"] as? TimeInterval)
+        // ★ 在进 Task 之前把需要的值取出来 ★
+        //
+        // `[String: Any]` **不是 Sendable**。
+        // 直接把它捕获进 `Task { @MainActor in ... }` 会报（Swift 6 严格并发）：
+        //     error: sending 'userInfo' risks causing data races
+        //
+        // ⇒ 这里先解出两个 Sendable 的值（String / TimeInterval），
+        //   Task 里只用它们，不再碰 userInfo。
+        let sessionID = (userInfo["sessionID"] as? String) ?? UUID().uuidString
 
         Task { @MainActor in
             if #available(iOS 16.1, *) {
                 switch action {
                 case "start":
-                    let sid = (userInfo["sessionID"] as? String) ?? UUID().uuidString
-                    CaptureKeepAliveManager.shared.start(sessionID: sid)
+                    CaptureKeepAliveManager.shared.start(sessionID: sessionID)
                 case "stop":
                     CaptureKeepAliveManager.shared.end()
                 default:
