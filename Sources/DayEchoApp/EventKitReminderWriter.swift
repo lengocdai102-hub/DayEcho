@@ -230,8 +230,15 @@ public final class EventKitReminderWriter {
         //
         // `EKReminder` 不是 Sendable，不能跨 continuation 传，
         // 所以查询阶段只带标识符回来；删除对象在这里同步取。
-        guard let target = store.calendarItem(withIdentifier: identifier) else {
+        //
+        // ★ 注意 `calendarItem(withIdentifier:)` 返回的是 `EKCalendarItem` ★
+        // （提醒事项的基类），不是 `EKReminder` ⇒ 必须做一次向下转型。
+        guard let item = store.calendarItem(withIdentifier: identifier) else {
             // 刚查到、现在取不到 ⇒ 竞态或已被删除
+            return .notFound
+        }
+        guard let target = item as? EKReminder else {
+            // 标识符对应的不是提醒事项（理论上不会发生）⇒ 当作找不到
             return .notFound
         }
         do {
