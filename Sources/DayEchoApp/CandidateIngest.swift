@@ -53,6 +53,19 @@ extension DayEchoModel {
         ledger.orphaned
     }
 
+    /// ★ 需要人工核对的条目 ★
+    ///
+    /// = `orphaned`（系统里有、账本记不上）
+    /// + `writing`（写入过程被中断，系统侧状态未知）
+    ///
+    /// ★ 为什么合并成一个分区 ★
+    ///
+    /// 两者的**处理方式完全一样**：都要用户去「提醒事项」里看一眼。
+    /// 分成两个分区只会让用户在 App 里到处找。
+    var reconciliationEntries: [ReminderLedgerEntry] {
+        ledger.needsReconciliation
+    }
+
     /// ★ 某天的存档条目 ★
     ///
     /// ★ 归日口径：按「用户说这句话的当天」，不是「提醒触发日」★
@@ -171,30 +184,58 @@ extension DayEchoModel {
                     return
                 }
             }
+
+            // ★★★ 第一阶段：先落盘 `.writing`，再调 EventKit ★★★
+            //
+            // ★ 为什么顺序不能反 ★
+            //
+            // 旧顺序（先写 EventKit、后记账本）有一个致命窗口：
+            //   EventKit 写成功 → 账本落盘失败 → 磁盘上仍是 `.pending`
+            //   → App 重启 → 条目回到待确认流 → 用户再点一次 → **两条重复提醒**
+            //
+            // 新顺序（先落盘 `.writing`）：
+            //   落盘 `.writing` 成功 → EventKit 写 → 落盘 `.accepted`/`.orphaned`
+            //   ⇒ 磁盘上**任何时刻**都不会出现 `.pending`
+            //   ⇒ 重启后绝不会回到待确认流 ⇒ **不可能产生重复提醒**
+            //
+            // ★ 落盘失败就放弃写入 ★
+            // 这时系统里还没有提醒，放弃是安全的；
+            // 硬写下去才是危险的（因为后续落盘也可能失败）。
+            guard ledger.beginWriting(id: entry.id) else {
+                statusMessage = "本地记账失败，已放弃写入以避免重复提醒。请稍后重试。"
+                return
+            }
+
             switch await writer.write(draft) {
             case .written(let identifier):
-                // ★ 检查账本落盘结果 ★
+                // ★ 第二阶段：写入成功，落最终状态 ★
                 //
-                // EventKit 已写入成功，但账本落盘可能失败（磁盘满 / 权限 / 目录被占）。
-                // 这时**系统里已经有这条提醒**，但账本还停在 pending。
-                //
-                // ⇒ 后果：用户看到卡片还是「待确认」，再点一次确认 → 系统里出现两条重复提醒。
-                //
-                // ⇒ 处置：明确告诉用户「写进系统了，但本地记账失败」，
-                //    并且**不要让它继续留在待确认流里**（writingIDs 的 defer 会清，
-                //    但状态仍需处理）。
-                if ledger.markAccepted(id: entry.id, eventKitIdentifier: identifier) {
+                // `completeWriting` 返回 false 表示「这次落盘又失败了」。
+                // 此时磁盘上仍是 `.writing` ⇒ 重启后不在待确认流 ⇒ 安全。
+                let recorded = ledger.completeWriting(
+                    id: entry.id,
+                    outcome: .succeeded,
+                    eventKitIdentifier: identifier
+                )
+                if recorded {
                     statusMessage = "已写入系统提醒：\(entry.title)"
                 } else {
-                    // ★ 落盘失败 ⇒ 系统里已有这条，账本记不上 ★
-                    // ⇒ 显式标 orphaned，让它离开待确认流，
-                    //    防止用户再点一次确认写出第二条重复提醒。
-                    ledger.markOrphaned(id: entry.id, eventKitIdentifier: identifier)
+                    // ★ 系统里有这条，但账本两次都没记上 ⇒ 明确标 orphaned ★
+                    // 让它进入「需要核对」分区，用户能看到并去系统里清理。
+                    ledger.completeWriting(
+                        id: entry.id,
+                        outcome: .succeededButUnrecorded,
+                        eventKitIdentifier: identifier
+                    )
                     statusMessage = "已写入系统提醒，但本地记账失败。请到「提醒事项」里查看，别再点确认。"
                 }
             case .permissionDenied:
+                // ★ 没写成 ⇒ 回到 pending（可以重试）★
+                ledger.completeWriting(id: entry.id, outcome: .failed)
                 statusMessage = "没有提醒事项权限，无法写入。"
             case .failed(let reason):
+                // ★ 没写成 ⇒ 回到 pending（可以重试）★
+                ledger.completeWriting(id: entry.id, outcome: .failed)
                 statusMessage = "写入失败：\(reason)"
             }
         }
@@ -245,6 +286,14 @@ extension DayEchoModel {
                 // ⇒ 账本**保持 accepted**，不许回 pending。
                 //    否则用户再点一次确认，系统里就会多一条重复提醒。
                 statusMessage = "删除失败（\(reason)），系统里那条还在。账本保持原状。"
+            case .lookupFailed(let reason):
+                // ★ 查询失败 ⇒ 状态未知 ⇒ 账本**保持 accepted** ★
+                //
+                // ★ 这条最容易被搞错 ★
+                // 「查不到」≠「没有」。我们只是没查出来，
+                // 不能据此断定系统里那条被删了。
+                // ⇒ 保持原状是唯一安全的选择。
+                statusMessage = "查询提醒事项失败（\(reason)），不确定系统里那条是否还在。账本保持原状，请稍后重试。"
             }
         }
     }

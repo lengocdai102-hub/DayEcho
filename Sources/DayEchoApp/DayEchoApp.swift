@@ -75,6 +75,20 @@ final class DayEchoModel: ObservableObject {
     /// 放在类本体而不是扩展里 —— Swift 扩展不能新增存储属性。
     let ledger = ReminderLedger()
 
+    /// ★ 账本加载异常（用户可见）★
+    ///
+    /// ★ 为什么必须暴露出来 ★
+    ///
+    /// 账本文件损坏时，旧实现会静默挪走文件、从空账本起步。
+    /// 用户看到的 App「一切正常，但记录少了」——
+    /// 他会以为「我本来就没记过那些提醒」，进而去系统里手动删掉 ⇒ 真正的数据丢失。
+    ///
+    /// ⇒ 这里把异常暴露成界面上的一个显式分区，
+    ///   告诉用户「出了什么事、救回了多少、原始文件在哪」。
+    var ledgerLoadFailure: ReminderLedger.LedgerLoadFailure? {
+        ledger.loadFailure
+    }
+
     /// ★ 正在写入系统提醒的条目（阶段 3）★
     ///
     /// ★ 为什么需要这个 ★

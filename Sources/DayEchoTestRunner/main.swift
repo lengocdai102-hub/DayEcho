@@ -111,6 +111,14 @@ try ReminderLedgerTests.run()
 try Stage3EndToEndTests.run()
 try Stage3FixTests.run()
 
+// ★ 第三轮审查缺陷修复（A/B/C 三条真实复现的缺陷）★
+//
+// 这一组用**注入真实故障**的方式复现缺陷，
+// 而不是只测「新逻辑在理想路径下对不对」——
+// 后者会「全绿但没测到东西」。
+print("\n[第三轮审查缺陷修复]")
+try Stage3Round3FixTests.run()
+
 print("\n─────────────────────────────")
 print("通过 \(Suite.passed) / 失败 \(Suite.failed.count)")
 if !Suite.failed.isEmpty {

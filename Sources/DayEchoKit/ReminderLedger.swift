@@ -131,6 +131,35 @@ public struct ReminderLedgerEntry: Identifiable, Hashable, Sendable, Codable {
 /// 候选账本：持久化所有候选及其确认状态。
 public final class ReminderLedger: @unchecked Sendable {
 
+    /// ★ 账本加载时的异常（用户可见）★
+    ///
+    /// ★ 为什么需要它 ★
+    ///
+    /// 旧行为：账本文件损坏 ⇒ 静默挪到隔离区 ⇒ 从空账本起步 ⇒ **用户零感知**。
+    ///
+    /// 后果对用户来说是这样的：
+    ///   - 所有已确认的提醒记录「凭空消失」（时间轴空了）
+    ///   - 系统里那些提醒还在，但 App 不记得它们了
+    ///   - 用户看到的是一个「一切正常但就是少了东西」的 App
+    ///   - 最坏情况：用户据此以为「我没记过那些提醒」⇒ 主动去系统里删掉 ⇒ **数据丢失**
+    ///
+    /// ⇒ 加载异常必须**让用户看见**，并保留原始文件供恢复。
+    public private(set) var loadFailure: LedgerLoadFailure?
+
+    /// ★ 账本加载失败的详情 ★
+    public struct LedgerLoadFailure: Equatable, Sendable {
+        /// 失败的原始原因（描述性文本）
+        public let reason: String
+        /// 坏文件被挪到的位置（留档，可人工恢复）
+        public let quarantinedPath: String?
+        /// 隔离动作本身是否成功
+        ///
+        /// false ⇒ 坏文件还在原处（连挪都挪不动），更得让用户知道。
+        public let quarantineSucceeded: Bool
+        /// 损坏的条目数量（如果能部分解析）
+        public let affectedCount: Int
+    }
+
     /// 账本文件名
     public static let fileName = "reminder-ledger.json"
 
@@ -192,6 +221,35 @@ public final class ReminderLedger: @unchecked Sendable {
     /// 去「提醒事项」里手动核对清理。
     public var orphaned: [ReminderLedgerEntry] {
         all.filter { $0.status == .orphaned }
+    }
+
+    /// ★ 正在写入系统提醒的条目 ★
+    ///
+    /// ★ 这些条目**不在待确认流里** ★
+    ///
+    /// 出现原因：写入过程被中断（App 被杀 / 崩在 EventKit 调用中间）。
+    /// 它们在磁盘上是 `.writing` —— 既不是「没确认过」，也不是「确认完成」。
+    ///
+    /// ★ 必须让用户看见 ★
+    ///
+    /// 系统里**可能**已经有这条提醒（写成功但没记上账），
+    /// 也**可能**没有（写失败但没记上账）。
+    /// 用户需要去「提醒事项」里看一眼，确认到底有没有。
+    ///
+    /// 如果把它们藏起来，用户会以为「这条已经处理完了」，
+    /// 而系统里可能躺着一条用户从没要过的提醒。
+    public var writing: [ReminderLedgerEntry] {
+        all.filter { $0.status == .writing }
+    }
+
+    /// ★ 需要人工核对的条目 ★
+    ///
+    /// = `orphaned`（系统里有、账本记不上）+ `writing`（结果未知）
+    ///
+    /// 两者共同的特征：**系统侧状态不确定**，
+    /// 需要用户去「提醒事项」里人工看一眼。
+    public var needsReconciliation: [ReminderLedgerEntry] {
+        all.filter { $0.status == .orphaned || $0.status == .writing }
     }
 
     /// 静默存档但尚未被用户提升的条目
@@ -283,6 +341,107 @@ public final class ReminderLedger: @unchecked Sendable {
     static func dedupeKey(_ e: ReminderLedgerEntry) -> String {
         let day = Int(e.fireDate.timeIntervalSince1970 / 86400)
         return "\(day)|\(Int(e.fireDate.timeIntervalSince1970 / 60))|\(e.title)|\(e.isDaily)"
+    }
+
+    /// ★ 第一阶段：确认动作开始前，先把状态落盘为 `.writing` ★
+    ///
+    /// ★ 这是「写盘失败 ⇒ 重启后重复提醒」这条缺陷的核心防线 ★
+    ///
+    /// 调用顺序必须是：
+    /// ```
+    /// beginWriting(id:)      → 落盘 .writing（★ 必须先成功 ★）
+    ///   ↓ EventKit 写入
+    /// completeWriting(id:)   → 落盘 .accepted 或 .orphaned
+    /// ```
+    ///
+    /// ★ 为什么 `beginWriting` 落盘失败就「不能继续写」★
+    ///
+    /// 如果这一步没落盘成功，磁盘上仍然是 `.pending`。
+    /// 此时若继续写 EventKit ⇒ 万一后续 `completeWriting` 也落盘失败，
+    /// 重启后条目回到待确认流 ⇒ 用户再点一次 ⇒ 系统里两条重复提醒。
+    ///
+    /// ⇒ `beginWriting` 失败时**必须放弃这次写入**。
+    ///   这时候系统里还没有提醒，放弃是安全的；
+    ///   而硬写下去才是危险的。
+    ///
+    /// - Returns: 是否成功进入「正在写入」状态
+    @discardableResult
+    public func beginWriting(id: UUID) -> Bool {
+        mutate(id: id) { e in
+            // ★ 只允许从 pending 进入 writing ★
+            // 已经 accepted/orphaned/writing 的条目不该被重复拉进来。
+            guard e.status == .pending else { return false }
+            e.status = .writing
+            return true
+        }
+    }
+
+    /// ★ 第二阶段：写入结束，落到最终状态 ★
+    ///
+    /// - Parameters:
+    ///   - id: 条目 ID
+    ///   - outcome: 写入结果
+    ///   - eventKitIdentifier: 系统提醒标识（成功时必填）
+    ///   - writtenAt: 写入成功的时刻
+    ///
+    /// ★ 落盘失败时的处置 ★
+    ///
+    /// 无论成功还是失败，**内存里都要落到目标状态**（不回滚），
+    /// 因为回滚到 `.writing` 或 `.pending` 都可能诱导重复写入。
+    ///
+    /// 但内存改了、磁盘没改 ⇒ 重启后磁盘上仍是 `.writing`。
+    /// 而 `.writing` **不在待确认流里** ⇒ 重启后用户不会看到它 ⇒
+    /// 也不会重复点 ⇒ **不会产生重复提醒**。
+    ///
+    /// ⇒ 这就是为什么 `.writing` 必须先落盘成功。
+    @discardableResult
+    public func completeWriting(
+        id: UUID,
+        outcome: WritingOutcome,
+        eventKitIdentifier: String? = nil,
+        writtenAt: Date = Date()
+    ) -> Bool {
+        queue.sync {
+            guard let idx = entries.firstIndex(where: { $0.id == id }) else { return false }
+            guard entries[idx].status == .writing else { return false }
+
+            switch outcome {
+            case .succeeded:
+                entries[idx].status = .accepted
+                entries[idx].eventKitIdentifier = eventKitIdentifier
+                entries[idx].writtenAt = writtenAt
+            case .failed:
+                // ★ 写入失败：系统里没有这条 ⇒ 回到 pending 是对的 ★
+                // 用户可以再点一次确认重试，不会造成重复。
+                entries[idx].status = .pending
+                entries[idx].eventKitIdentifier = nil
+                entries[idx].writtenAt = nil
+            case .succeededButUnrecorded:
+                // ★ 系统里有，但账本记不上 ⇒ orphaned ★
+                entries[idx].status = .orphaned
+                entries[idx].eventKitIdentifier = eventKitIdentifier
+                entries[idx].writtenAt = writtenAt
+            }
+
+            let ok = persistLocked()
+            if !ok {
+                // ★ 落盘失败：内存保持目标状态，**不回滚** ★
+                // 回滚到 `.writing` 或 `.pending` 都会诱导重复写入。
+                // 磁盘上仍是 `.writing` ⇒ 重启后不在待确认流 ⇒ 安全。
+                return false
+            }
+            return true
+        }
+    }
+
+    /// ★ 写入结果的分类 ★
+    public enum WritingOutcome: Sendable {
+        /// ★ 写入成功，且账本成功记上 ★
+        case succeeded
+        /// ★ 写入成功，但账本落盘失败（系统里有，账本记不上）★
+        case succeededButUnrecorded
+        /// ★ 写入失败（系统里没有这条）★
+        case failed
     }
 
     /// ★ 标记为已写入系统提醒 ★
@@ -448,15 +607,71 @@ public final class ReminderLedger: @unchecked Sendable {
         } catch {
             // ★ 损坏不丢数据 ★
             // 商用系统：账本读不出来，先把坏文件挪到一边留证据，再从空账本起步。
+            //
+            // ★ 但「静默清空」是不可接受的 ★
+            // 用户必须知道「你的记录出问题了」，否则他会以为「我本来就没记过」，
+            // 进而去系统里手动删掉那些提醒 ⇒ 真正的数据丢失。
+            //
+            // ⇒ 三件事一起做：
+            //   1. 尝试**部分恢复**（逐条解析，能救几条救几条）
+            //   2. 坏文件挪到隔离区留档（原始字节不丢）
+            //   3. 记录 `loadFailure`，让 UI 能明确告诉用户发生了什么
+            let recovered = recoverPartialEntries(from: url)
+
             let quarantined = root
                 .appendingPathComponent(SharedContainer.quarantineDirectory, isDirectory: true)
                 .appendingPathComponent("ledger-corrupt-\(UUID().uuidString).json")
-            try? FileManager.default.createDirectory(
-                at: quarantined.deletingLastPathComponent(),
-                withIntermediateDirectories: true)
-            try? FileManager.default.moveItem(at: url, to: quarantined)
-            entries = []
+            var quarantineOK = false
+            do {
+                try FileManager.default.createDirectory(
+                    at: quarantined.deletingLastPathComponent(),
+                    withIntermediateDirectories: true)
+                try FileManager.default.moveItem(at: url, to: quarantined)
+                quarantineOK = true
+            } catch {
+                // ★ 连挪都挪不动 ⇒ 坏文件还在原处 ★
+                // 更得让用户知道：下次启动还会再撞一次。
+                quarantineOK = false
+            }
+
+            entries = recovered
+            loadFailure = LedgerLoadFailure(
+                reason: String(describing: error),
+                quarantinedPath: quarantineOK ? quarantined.path : nil,
+                quarantineSucceeded: quarantineOK,
+                affectedCount: recovered.count
+            )
         }
+    }
+
+    /// ★ 尝试从损坏的账本里部分恢复条目 ★
+    ///
+    /// ★ 为什么值得做这一步 ★
+    ///
+    /// 账本是一个 JSON 数组。整体反序列化失败通常是因为**某一条**坏了
+    /// （比如某条记录缺字段、或某个枚举值是旧版本留下的）。
+    /// 整份丢掉 ⇒ 几百条正常记录全没了。
+    ///
+    /// ⇒ 改成逐条解析：能解析出来的留下，坏的丢掉。
+    ///   这样最坏情况只损失那一条，而不是全部。
+    ///
+    /// - Returns: 成功恢复的条目
+    private func recoverPartialEntries(from url: URL) -> [ReminderLedgerEntry] {
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        // 顶层必须是数组才能逐条拆
+        guard let array = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
+            return []
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var recovered: [ReminderLedgerEntry] = []
+        for element in array {
+            guard let elementData = try? JSONSerialization.data(withJSONObject: element) else { continue }
+            if let entry = try? decoder.decode(ReminderLedgerEntry.self, from: elementData) {
+                recovered.append(entry)
+            }
+        }
+        return recovered
     }
 
     /// 原子落盘（调用方需持有 queue）
@@ -471,12 +686,28 @@ public final class ReminderLedger: @unchecked Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(entries) else { return false }
         do {
-            try AtomicFile.write(data, to: fileURL)
+            // ★ 测试注入点：允许替换落盘实现 ★
+            // 落盘失败是「写盘失败 ⇒ 重复提醒」这类缺陷的触发条件，
+            // 必须能**真实复现**，不能只在文档里假设它会发生。
+            if let interceptor = persistInterceptor {
+                try interceptor(data, fileURL)
+            } else {
+                try AtomicFile.write(data, to: fileURL)
+            }
             return true
         } catch {
             return false
         }
     }
+
+    /// ★ 测试注入点：替换落盘实现 ★
+    ///
+    /// nil ⇒ 用默认的 `AtomicFile.write`。
+    /// 非 nil ⇒ 用这个闭包来写盘（抛错即模拟落盘失败）。
+    ///
+    /// ★ 生产代码不该碰它 ★
+    /// 只给测试用，用来真实复现「磁盘满 / 目录被占」这类外部故障。
+    public var persistInterceptor: ((Data, URL) throws -> Void)?
 
     /// ★ 显式保存 ★
     ///

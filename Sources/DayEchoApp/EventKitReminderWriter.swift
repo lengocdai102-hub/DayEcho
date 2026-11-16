@@ -155,13 +155,30 @@ public final class EventKitReminderWriter {
         /// ★ 关键：此时系统里提醒还在 ★
         /// 账本**不能**回到 pending —— 否则用户再点确认就会写第二条。
         case failed(String)
+        /// ★ ★ 查询本身失败了（不是「没有」，是「查不到」）★
+        ///
+        /// ★ 这是三态之外的第四态 ★
+        ///
+        /// 为什么要单独区分：
+        ///   - `.notFound` = 系统里**确实**没有这条 ⇒ 账本可以回 pending
+        ///   - `.failed` = 删除动作**真失败**了 ⇒ 系统里那条还在 ⇒ 账本不能回 pending
+        ///   - `.lookupFailed` = **我们没能查出来** ⇒ 状态未知 ⇒ 账本**更不能**回 pending
+        ///
+        /// ★ 旧代码的缺陷 ★
+        /// `fetchReminders` 的 completion 传 `nil` 表示「查询失败」，
+        /// 旧代码用 `reminders ?? []` 把它折叠成了**空数组**，
+        /// 于是「查不到」被当成「真的没有」⇒ 返回 `.notFound`
+        /// ⇒ 账本回 pending ⇒ 用户再点一次确认 ⇒ **系统里两条重复提醒**。
+        ///
+        /// ⇒ 现在 `nil` 必须走 `.lookupFailed`，**绝不能**当成「没有」。
+        case lookupFailed(String)
     }
 
     /// ★ 删除一条已写入的系统提醒 ★
     ///
     /// 用户在「提醒事项」里删了它，我们这边也要能删（撤销写入场景）。
     ///
-    /// ★ 为什么要三态而不是 Bool ★
+    /// ★ 为什么要四态而不是 Bool ★
     ///
     /// 「没找到」和「删除失败」在**后果上完全不同**：
     ///   - 没找到 ⇒ 系统侧已无此提醒 ⇒ 账本回 pending 是对的
@@ -173,8 +190,17 @@ public final class EventKitReminderWriter {
     /// - Parameter identifier: `EKReminder.calendarItemIdentifier`
     public func remove(identifier: String) async -> RemovalOutcome {
         let predicate = store.predicateForReminders(in: nil)
-        let reminders = await fetchReminders(predicate)
+        let reminders: [EKReminder]
+        switch await fetchReminders(predicate) {
+        case .success(let list):
+            reminders = list
+        case .failure(let reason):
+            // ★ 查询失败 ⇒ 不是「没有」★
+            // 状态未知 ⇒ 账本保持原状（不��� pending）。
+            return .lookupFailed(reason)
+        }
         guard let target = reminders.first(where: { $0.calendarItemIdentifier == identifier }) else {
+            // ★ 这里才是真正的「没有」★
             return .notFound
         }
         do {
@@ -186,10 +212,38 @@ public final class EventKitReminderWriter {
     }
 
     /// 某个标识的提醒是否还存在（用于对账：用户手动删了系统提醒 → 账本同步）
-    public func exists(identifier: String) async -> Bool {
+    ///
+    /// ★ 返回三态而不是 Bool ★
+    ///
+    /// 旧实现用 `contains` 把「查询失败」和「确实没有」混成 `false`。
+    /// 对账场景下这是危险的：`false` 会让账本以为「系统里没有这条」，
+    /// 于是回 pending，用户再点一次确认就多一条重复提醒。
+    ///
+    /// - Returns: `.present` / `.absent` / `.unknown`
+    public func existence(identifier: String) async -> ExistenceOutcome {
         let predicate = store.predicateForReminders(in: nil)
-        let reminders = await fetchReminders(predicate)
-        return reminders.contains { $0.calendarItemIdentifier == identifier }
+        switch await fetchReminders(predicate) {
+        case .success(let reminders):
+            return reminders.contains { $0.calendarItemIdentifier == identifier }
+                ? .present
+                : .absent
+        case .failure:
+            return .unknown
+        }
+    }
+
+    /// ★ 存在性的三态 ★
+    public enum ExistenceOutcome: Equatable {
+        /// 系统里确实有这条
+        case present
+        /// ★ 系统里确实没有这条（查到了，但列表里没有）★
+        case absent
+        /// ★ 查询失败，状态未知 ★
+        ///
+        /// ★ 与 `.absent` 的区别至关重要 ★
+        /// `.absent` 可以安全地回 pending；
+        /// `.unknown` **绝不能**回 pending。
+        case unknown
     }
 
     // MARK: - 内部
@@ -198,10 +252,27 @@ public final class EventKitReminderWriter {
     ///
     /// `fetchReminders(matching:)` 只有 completion 版本，没有 async 版本，
     /// 所以这里用 continuation 包一层。
-    private func fetchReminders(_ predicate: NSPredicate) async -> [EKReminder] {
+    ///
+    /// ★ 返回 Result 而不是 `[EKReminder]` ★
+    ///
+    /// `EKEventStore.fetchReminders` 的 completion 签名是
+    /// `([EKReminder]?) -> Void` —— **nil 表示「查询失败」**，
+    /// 而空数组表示「查到了，确实一条都没有」。
+    ///
+    /// 旧实现写的是 `reminders ?? []` —— 把这两种情况**折叠成同一个值**。
+    /// 于是「查不到」被当成「真的没有」，
+    /// 上层据此让账本回 pending ⇒ 用户再点一次确认 ⇒ **重复提醒**。
+    ///
+    /// ⇒ 这里必须用 Result 把 nil 单独接住。
+    private func fetchReminders(_ predicate: NSPredicate) async -> Result<[EKReminder], String> {
         await withCheckedContinuation { continuation in
             store.fetchReminders(matching: predicate) { reminders in
-                continuation.resume(returning: reminders ?? [])
+                if let reminders {
+                    continuation.resume(returning: .success(reminders))
+                } else {
+                    // ★ nil = 查询失败，不是「没有」★
+                    continuation.resume(returning: .failure("EventKit 查询提醒列表失败"))
+                }
             }
         }
     }

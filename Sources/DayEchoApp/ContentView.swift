@@ -11,6 +11,7 @@ struct ContentView: View {
                 writtenSection
                 archiveSection
                 rejectedSection
+                ledgerFailureSection
                 orphanedSection
                 manualEntrySection
                 integritySection
@@ -93,22 +94,23 @@ struct ContentView: View {
         RejectedCandidateList(day: Date())
     }
 
-    // MARK: - 账实不符（异常态 · 需人工核对）
+    // MARK: - 需要人工核对（异常态 · 需人工核对）
 
-    /// ★ 系统里有提醒、但本地账本没记上的条目 ★
+    /// ★ 系统侧状态不确定的条目 ★
     ///
-    /// ★ 这是异常态，正常不该出现 ★
+    /// 两类：
+    ///   - `orphaned`：系统里有提醒，本地账本没记上
+    ///   - `writing`：写入过程被中断（App 被杀），系统里到底有没有是未知的
     ///
-    /// 出现原因：写入系统提醒成功后，本地账本落盘失败。
-    /// 这些条目**不在「待确认」里**（不会诱导你重复点），
-    /// 但需要你知道「系统里有一条对不上的账」。
+    /// ★ 这些条目**不在「待确认」里**（不会诱导你重复点）★
+    /// 但需要你知道「系统里可能有一条对不上的账」。
     private var orphanedSection: some View {
         Section {
-            if model.orphanedEntries.isEmpty {
-                Text("没有账实不符的记录")
+            if model.reconciliationEntries.isEmpty {
+                Text("没有需要核对的记录")
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(model.orphanedEntries) { entry in
+                ForEach(model.reconciliationEntries) { entry in
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text(entry.fireDate.formatted(date: .omitted, time: .shortened))
@@ -116,6 +118,14 @@ struct ContentView: View {
                             if entry.isDaily {
                                 Text("· 每天")
                                     .foregroundStyle(.secondary)
+                            }
+                            if entry.status == .writing {
+                                // ★ 区分两种异常：用户需要知道是哪种 ★
+                                Text("· 结果未知")
+                                    .font(.caption)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.orange.opacity(0.18), in: Capsule())
                             }
                         }
                         Text(entry.title)
@@ -126,6 +136,11 @@ struct ContentView: View {
                                 .italic()
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if entry.status == .writing {
+                            Text("写入被中断，系统里是否有这条不确定。请到「提醒事项」里看一眼。")
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
                         }
                         Button {
                             model.revert(entry)
@@ -139,9 +154,56 @@ struct ContentView: View {
                 }
             }
         } header: {
-            Text("账实不符")
+            Text("需要核对")
         } footer: {
-            Text("系统里已经写入了提醒，但本地记账失败。这一条不会重复出现在待确认里，需要你到「提醒事项」里手动核对删除。")
+            Text("这些条目系统侧状态不确定，不会重复出现在待确认里，但需要你到「提醒事项」里手动核对删除。")
+        }
+    }
+
+    // MARK: - 账本加载异常（数据完整性告警）
+
+    /// ★ 账本文件损坏时的显式告警 ★
+    ///
+    /// ★ 为什么必须有这个分区 ★
+    ///
+    /// 旧行为：账本损坏 ⇒ 静默挪走 ⇒ 从空账本起步 ⇒ 用户零感知。
+    /// 用户会看到「记录少了」，进而以为「我本来就没记过」，
+    /// 进而去系统里删掉那些提醒 ⇒ **真正的数据丢失**。
+    ///
+    /// ⇒ 明确告诉用户：出了什么事、救回了多少条、原始文件在哪。
+    @ViewBuilder
+    private var ledgerFailureSection: some View {
+        if let failure = model.ledgerLoadFailure {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("提醒记录文件损坏", systemImage: "exclamationmark.triangle.fill")
+                        .font(.headline)
+                        .foregroundStyle(.orange)
+                    Text("原因：\(failure.reason)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text(failure.affectedCount > 0
+                         ? "已尽力恢复 \(failure.affectedCount) 条记录。"
+                         : "未能恢复任何记录。")
+                        .font(.footnote)
+                    if let path = failure.quarantinedPath {
+                        Text("原始文件已保留在：\(path)")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("⚠️ 原始文件未能挪走，仍在原处。")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                    Text("请不要删除「提醒事项」里的对应提醒，直到你核对完。")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+                .padding(.vertical, 6)
+            } header: {
+                Text("数据完整性告警")
+            }
         }
     }
 
