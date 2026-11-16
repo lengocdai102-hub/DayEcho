@@ -163,6 +163,23 @@ public final class ReminderLedger: @unchecked Sendable {
     /// 账本文件名
     public static let fileName = "reminder-ledger.json"
 
+    /// ★ 共享账本单例 ★
+    ///
+    /// ★ 为什么必须是单例（2026-11-16 修）★
+    ///
+    /// 原实现里 `DayEchoModel` 和 `PhoneReceiverModel` 各自 `ReminderLedger()`，
+    /// 产生**两个实例**：
+    ///   - 各自持有独立的内存态 `entries`
+    ///   - 却写**同一个** `reminder-ledger.json`
+    ///
+    /// ⇒ 两个实例互相覆盖对方的写入。
+    /// ⇒ 更糟的是：转写走 `PhoneReceiverModel` 的实例，
+    ///   界面读 `DayEchoModel` 的实例 ⇒ **转写产生的候选在界面上永远看不见**，
+    ///   而且重启后可能被另一个实例的落盘覆盖掉。
+    ///
+    /// ⇒ 单一实例，全 App 共享。
+    public static let shared = ReminderLedger()
+
     public let root: URL
     private var entries: [ReminderLedgerEntry]
     private let queue = DispatchQueue(label: "com.dayecho.ledger", qos: .utility)

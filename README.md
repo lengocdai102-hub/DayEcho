@@ -12,7 +12,7 @@
 在手表表盘点一下录一句 → 同步到 iPhone → 抽取成提醒候选 → **你点确认** → 写入系统「提醒事项」并自动响铃。
 
 > ★ **当前状态**：上面这条链路里，**「录一句 → 转成文字 → 候选卡片」已打通**（P0-1 端侧转写 + P0-2 生产接线，
-> 306 项单测覆盖）；**Share Extension 与 App Intent 仍未实现**。
+> 312 项单测覆盖）；**Share Extension 与 App Intent 仍未实现**。
 > 候选 → 确认 → 写入系统提醒 → 响铃这一段同样已通。
 > ★ 唯一缺口：**真机运行时验收未做**（端侧识别的实际效果、飞行模式下的离线行为、权限弹窗时机）。
 > 验收步骤见 `docs/上机前验证清单.md` 2.9 节。
@@ -223,7 +223,7 @@ Payload/DayEcho.app/
 
 ## 当前状态
 
-**试水版 / 技术验证与内测准备包。** 核心逻辑 **306 项单元测试全绿**（`swift run DayEchoTestRunner`）。
+**试水版 / 技术验证与内测准备包。** 核心逻辑 **312 项单元测试全绿**（`swift run DayEchoTestRunner`）。
 
 > ★ **口径说明（请勿误读）**：下表的「已实现」指的是**该模块自身**的实现状态。
 > **主路径（录音 → 文字 → 候选卡片）已闭环** —— 端侧转写 `SFSpeechRecognizer` 与 Watch→候选管线
@@ -237,7 +237,7 @@ Payload/DayEcho.app/
 | Watch → iPhone 分段传输 / 断连补传 / 永不删未确认 | ✅ 已实现 |
 | 三源归一 `IngestionSource` | ✅ 枚举已就位 |
 | App Group `group.com.dayecho.shared` | ✅ 已实现 |
-| **候选确认卡片流 + EventKit 写入 + 撤销**（阶段 3） | ✅ 已实现（306 项单测覆盖） |
+| **候选确认卡片流 + EventKit 写入 + 撤销**（阶段 3） | ✅ 已实现（312 项单测覆盖） |
 | **写盘故障防重复提醒**（两阶段落盘 `.writing`） | ✅ 已实现（第三轮 [A] 修复，7 条回归测试） |
 | **EventKit「查不到 ≠ 没有」三态区分** | ✅ 已实现（第三轮 [B] 修复，2 条回归测试） |
 | **账本损坏部分恢复 + UI 告警** | ✅ 已实现（第三轮 [C] 修复，5 条回归测试） |
@@ -252,7 +252,7 @@ Payload/DayEcho.app/
 - ★ **仍待真机验收** —— 飞行模式下转写、权限弹窗时机、中文时间抽取准确率。
 - ★ **表盘一键抓拍削弱了核心假设** —— 原设想是「零操作被动捕获」，现形态需抬腕说一次。
   这是**有意识的取舍**（电池确定性 + 审核无红线），代价已在送审稿第 8 章如实标注。
-- ★ **阶段 3 真机运行时验收未做** —— 306 项单测覆盖纯逻辑；EventKit 权限弹窗、实际闹钟响铃、
+- ★ **阶段 3 真机运行时验收未做** —— 312 项单测覆盖纯逻辑；EventKit 权限弹窗、实际闹钟响铃、
   每日递归、撤销、系统中断后恢复，**全部只有真机能验**（见 `docs/上机前验证清单.md` 2.5 节）。
 - WatchConnectivity 的传输时延与中断行为未做真实场景压测。
 - 未做 App Store 上架准备：截图、描述、关键词、审核材料。残障合规与 51 州同意法弹窗**已推迟到上架前**
@@ -274,7 +274,15 @@ Payload/DayEcho.app/
 | 优先级 | 事项 | 状态 | 关键约束 |
 |---|---|---|---|
 | 🔴 **P0-1** | 端侧转写 `SFSpeechRecognizer` | ✅ 已实现 | 含 m4a→16kHz WAV 转码（`AudioTranscoder.swift`）与强制离线 |
-| 🟠 **P0-2** | Watch→App 候选管线打通 | ✅ 已接线 | `PhoneReceiverModel.transcribe(_:)` → 转写 → `IngestionPipeline` → 账本 |
+| 🟠 **P0-2** | Watch→App 候选管线打通 | ✅ 已接线 | `PhoneReceiverModel.transcribe(_:)` → 转写 → `IngestionPipeline` → **共享账本落账** → 待确认卡片 |
+
+> ★ **2026-11-16 补修：P0-2 接线曾有三处「静默断链」** ——
+> 编译通过、单测全绿，但功能实际跑不通。已全部修掉并加 6 条回归测试（`TranscriptionWiringTests.swift`）：
+> 1. 管线只返回候选**数量** ⇒ 候选被丢弃 ⇒ `ledger.record` 从未调用 ⇒ **一条提醒都进不了待确认流**。
+> 2. 两个模型各自建 `ReminderLedger()` ⇒ 两个实例各持内存态却写同一个 JSON ⇒ 转写写的账界面读不到 ⇒ 改为 `ReminderLedger.shared` 单例。
+> 3. 账本非 `ObservableObject` ⇒ 落账后界面不重画 ⇒ 加 `ledgerRevision` 触发器 + `onReceive` 刷新。
+>
+> 同时补上**语音识别权限申请**（原实现从未调用 `requestAuthorization` ⇒ 首次抓拍必然失败）。
 | 🟡 **P1** | Share Extension | ❌ 无 target | ⚠️ **免费账号无 App Group ⇒ 扩展与主 App 无法通信** |
 | 🔵 **P2** | `ExtractReminderFromTextIntent` | ❌ 无实现 | 需新建 iOS target（现有 `DayEchoIntents` 是 watchOS） |
 

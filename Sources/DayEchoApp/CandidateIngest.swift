@@ -28,18 +28,30 @@ extension DayEchoModel {
     // MARK: - 账本
 
     /// 待确认条目
+    ///
+    /// ★ 为什么要读 `ledgerRevision` ★
+    ///
+    /// `ledger.pending` 是从文件账本读出来的**快照**，不是 `@Published`。
+    /// 如果这里只写 `ledger.pending`，SwiftUI 认为这个值**从未变化** ——
+    /// 即使账本里刚多了一条待确认卡片，界面也不会重画。
+    ///
+    /// ⇒ 必须显式依赖 `ledgerRevision`（`refreshFromLedger()` 会让它 +1），
+    ///   SwiftUI 才会重新计算这个属性。
     var pendingEntries: [ReminderLedgerEntry] {
-        ledger.pending
+        _ = ledgerRevision
+        return ledger.pending
     }
 
     /// 全部存档条目（静默层，尚未被提升）
     var archivedEntries: [ReminderLedgerEntry] {
-        ledger.archived
+        _ = ledgerRevision
+        return ledger.archived
     }
 
     /// 已写入系统的条目
     var writtenEntries: [ReminderLedgerEntry] {
-        ledger.accepted
+        _ = ledgerRevision
+        return ledger.accepted
     }
 
     /// ★ 账实不符的条目（系统里有提醒，账本没记上）★
@@ -50,7 +62,8 @@ extension DayEchoModel {
     /// 这些条目不在 `pending` 里（不会诱导重复确认），
     /// 也不在 `accepted` 里（账本确实没记上）。
     var orphanedEntries: [ReminderLedgerEntry] {
-        ledger.orphaned
+        _ = ledgerRevision
+        return ledger.orphaned
     }
 
     /// ★ 需要人工核对的条目 ★

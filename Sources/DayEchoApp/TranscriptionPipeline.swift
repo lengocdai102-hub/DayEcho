@@ -42,9 +42,18 @@ public final class TranscriptionPipeline {
     // MARK: - 结果
 
     /// ★ 一次接线处理的结果 ★
+    ///
+    /// ★ 2026-11-16 修正：必须携带真实候选，不能只给数量 ★
+    ///
+    /// 原实现只返回 `candidateCount: Int` ⇒ 候选本身在函数边界上被丢弃
+    /// ⇒ 调用方拿不到任何可落账的东西 ⇒ `ledger.record` 从未被调用
+    /// ⇒ **转写成功的录音一条提醒都进不了待确认流**。
+    ///
+    /// ⇒ 现在直接返回 `[TieredCandidate]`，由调用方负责落账。
+    ///   管线只负责「产出」，落账是「记账」的职责，两者不混。
     public enum Outcome: Equatable {
         /// 转写成功，且产出了候选
-        case transcribed(candidateCount: Int, text: String)
+        case transcribed(candidates: [TieredCandidate], text: String)
         /// 转写成功，但文本不可用（没听清 / 置信度低）
         ///
         /// ★ 这不是错误 ★
@@ -54,10 +63,19 @@ public final class TranscriptionPipeline {
         /// 转写失败
         case failed(reason: String)
 
+        /// 产出的候选数量
+        public var candidateCount: Int {
+            if case .transcribed(let candidates, _) = self { return candidates.count }
+            return 0
+        }
+
         /// 是否产出候选
-        public var producedCandidates: Bool {
-            if case .transcribed(let n, _) = self { return n > 0 }
-            return false
+        public var producedCandidates: Bool { candidateCount > 0 }
+
+        /// ★ 产出的候选（供落账用）★
+        public var candidates: [TieredCandidate] {
+            if case .transcribed(let candidates, _) = self { return candidates }
+            return []
         }
     }
 
@@ -181,7 +199,7 @@ public final class TranscriptionPipeline {
             )
             let tiered = IngestionPipeline().ingest(entry, now: occurredAt)
             return .transcribed(
-                candidateCount: tiered.count,
+                candidates: tiered,
                 text: result.normalizedText
             )
         } catch {

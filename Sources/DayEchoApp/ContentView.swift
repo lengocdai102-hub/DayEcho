@@ -3,6 +3,8 @@ import DayEchoKit
 
 struct ContentView: View {
     @EnvironmentObject private var model: DayEchoModel
+    /// ★ 接收端（转写进度）★
+    @EnvironmentObject private var receiver: PhoneReceiverModel
 
     /// ★ 按钮高度随系统字号缩放 ★
     ///
@@ -13,6 +15,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             List {
+                transcriptionSection
                 confirmationSection
                 writtenSection
                 archiveSection
@@ -25,6 +28,19 @@ struct ContentView: View {
                 exportSection
             }
             .navigationTitle("teacher")
+            // ★ 候选变了 ⇒ 重新读账本 ★
+            //
+            // ★ 为什么需要这个 ★
+            //
+            // `ReminderLedger` 不是 `ObservableObject`（它是文件账本，不是 SwiftUI 状态），
+            // 所以转写落账后 SwiftUI **不会自动**重画待确认列表。
+            // 没有这个 `onReceive`，新候选要等用户切走再切回来才看得见 ——
+            // 而「转写完了但什么都没出现」正是最让人以为功能坏了的场景。
+            //
+            // 转写落账后会发这个通知 ⇒ 这里强制刷新。
+            .onReceive(NotificationCenter.default.publisher(for: .dayEchoCandidatesChanged)) { _ in
+                model.refreshFromLedger()
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -35,6 +51,63 @@ struct ContentView: View {
                     .accessibleAction("检查", hint: "检查录音传输与文件完整性")
                 }
             }
+        }
+    }
+
+    // MARK: - 转写状态（P0-1）
+
+    /// ★ 转写进度分区 ★
+    ///
+    /// ★ 为什么必须有这个分区 ★
+    ///
+    /// 转写是耗时的（转码 + 离线识别，可能几秒）。
+    /// 如果界面上什么都不显示，用户会以为：
+    ///   - App 卡死了
+    ///   - 录音丢了
+    ///   - 按表盘没生效
+    ///
+    /// ★ 对健忘者，这比功能本身失败更致命 ★
+    /// 他不会去排查「为什么没提醒」，只会得出结论「这东西没用」，
+    /// 然后再也不用了。
+    ///
+    /// ⇒ 必须明确告诉用户「正在处理」，以及处理完「成了几条 / 为什么没成」。
+    ///
+    /// ★ 只在有内容时显示 ★
+    /// 空闲时不占屏幕空间（对注意力不集中的人，每一块常驻 UI 都是干扰）。
+    private var transcriptionSection: some View {
+        Section {
+            switch receiver.transcriptionState {
+            case .idle:
+                EmptyView()
+            case .working(let sequence):
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("正在转写第 \(sequence) 段…")
+                        .foregroundStyle(.secondary)
+                }
+            case .done(let count, let text):
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(count > 0
+                         ? "已转成 \(count) 条待确认提醒"
+                         : "听清了，但里面没有带时间的安排")
+                        .font(.body.weight(.medium))
+                    if !text.isEmpty {
+                        Text(text)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            case .skipped(let reason):
+                Label(reason, systemImage: "ear.trianglebadge.exclamationmark")
+                    .foregroundStyle(.secondary)
+            case .failed(let reason):
+                Label(reason, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
+        } header: {
+            Text("语音转写")
+        } footer: {
+            Text("录音只在本机转成文字，不上传。转写失败时原录音会保留，你可以重说一次。")
         }
     }
 
