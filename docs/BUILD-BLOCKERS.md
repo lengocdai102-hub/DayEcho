@@ -790,3 +790,136 @@ ApiAudit 的块切分漏算了 struct 声明行的 `{` ⇒ 误报 3 个类型缺
 PlistAudit 的规则只做整文件字符串包含 ⇒ 分不清「传音频」和「传控制信号」
 ⇒ 误报 watch 端违规。这两条都是**既存**问题，只是 CI 从未真跑过。
 ⇒ 审计器报错时，先验证被审对象本身，再决定改业务还是改工具。
+
+## 十一、2026-11-17：从"runner 失联"到"真机装不上"，两轮真因与修复
+
+### 11.1 第一轮：iOS CI 全绿但产物装不上（IXErrorDomain）
+
+**现象**
+
+真机侧载时失败：
+
+```
+Error: "APIInternalError"
+Error Domain=IXErrorDomain Code=2 "Failed to create app extension placeholder for
+  .../DayEcho.app/PlugIns/DayEchoWidget.appex"
+NSUnderlyingError: IXErrorDomain Code=17
+  "extensionDictionary must be set in placeholder attributes
+   for an app extension placeholder"
+```
+
+**根因**
+
+widget extension 的 `Info.plist` 缺 `NSExtension` 字典。
+
+`xcodeproj` 里原本写的是：
+
+```
+INFOPLIST_KEY_NSExtensionPointIdentifier
+```
+
+这是**平铺**写法 —— Xcode 会在 `Info.plist` **顶层**生成一个
+`NSExtensionPointIdentifier` key，**不会**生成 `NSExtension` 字典。
+
+而 iOS 安装 app extension 时，`MobileInstallation` 要求 placeholder
+必须带 `extensionDictionary`（即 `NSExtension` 字典）⇒ 直接拒绝安装。
+
+**第一次修复（不够）**
+
+改成嵌套写法：
+
+```
+INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier
+```
+
+同时在 CI 加了一条产物级断言
+（`Assert app extensions have NSExtension dictionary`）。
+
+**⇒ 这条断言正确地抓到了问题**：嵌套写法下产物 plist 里
+**连一个 `NSExtensionPointIdentifier` 都没有** ——
+说明 Xcode **根本不处理**这两个 build setting。
+
+| 写法 | 产物结果 |
+|---|---|
+| `INFOPLIST_KEY_NSExtensionPointIdentifier` | 顶层散落 key，无 `NSExtension` 字典 |
+| `INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier` | 什么都没有 |
+| **真实 `Info.plist` 文件** | ✅ `NSExtension` 字典正确 |
+
+**最终修复**
+
+- 新增 `Sources/DayEchoWidget/Info.plist`
+- 新增 `Sources/DayEchoWatchWidget/Info.plist`
+  （含 `NSExtension` / `NSExtensionPointIdentifier`
+  = `com.apple.widgetkit-extension`）
+- `legal/gen_xcodeproj.rb`：
+  `GENERATE_INFOPLIST_FILE = YES → NO`，
+  改设 `INFOPLIST_FILE`，两个 plist 加入 target 文件引用
+
+**为什么编译 / 打包 / 审计全绿，只有装机炸**
+
+编译不关心 plist 结构；zip 打包也不关心；
+只有真机安装（`MobileInstallation`）才读 `NSExtension` 字典。
+⇒ 这个 bug 能一路绿灯跑到装机那一刻。
+
+**两道回归防线**
+
+1. `legal/assert_project_layout.rb` 第 7 条 —— 工程生成后、编译前：
+   - 查 `GENERATE_INFOPLIST_FILE` 必须为 `NO`
+   - 查 `INFOPLIST_FILE` 指向正确路径
+   - 查该 plist 真的有 `NSExtension` 字典且 identifier 正确
+   （本地已反向验证：临时删掉 `NSExtension` ⇒ 失败 1 项，exit=1）
+2. CI 步骤 `Assert app extensions have NSExtension dictionary` ——
+   archive 之后查**产物** appex 的 `Info.plist`
+
+### 11.2 第二轮：runner 45 分钟失联（不是编译错误）
+
+**现象**
+
+run `43918889269`：iOS simulator build 跑约 **45 分钟**后 hosted runner
+失联，日志未上传。
+
+**排查**
+
+- 对比历史成功 run `43404365284`：同一 step 约 **24 秒**完成
+- 无远程 SPM 依赖，无递归 shell script phase
+- target 类型数无显著变化（都是 3）
+
+⇒ 倾向 runner 资源/构建耗时问题，不是源码错误。
+
+**优化措施（`.github/workflows/ios.yml`）**
+
+| 措施 | 说明 |
+|---|---|
+| job 级 `timeout-minutes: 40` | 避免长时间失联 |
+| simulator build 前清盘 | 降低 hosted runner 磁盘压力 |
+| watchOS typecheck 与 build 复用 `DerivedDataWatch` | 省掉一份完整 watchOS 编译缓存 |
+| 5 处 `xcodebuild` 加 `COMPILER_INDEX_STORE_ENABLE=NO` | 降低 CPU / 内存 / 磁盘开销 |
+
+**实测效果**
+
+| run | 表现 |
+|---|---|
+| `43918889269`（优化前） | ~45 分钟后 runner 失联，日志未上传 |
+| `43953940686`（优化后） | **~61 秒**稳定失败并上传真实编译日志 |
+
+⇒ 优化把"失联"变成"可诊断"，随后修掉
+`EventKitReminderWriter.swift` 里 `EKCalendarItem → EKReminder`
+的向下转型错误，iOS CI 首次全绿（run `43957669399`）。
+
+### 11.3 本轮交付物
+
+- iOS CI 全绿：run `43993906683`（提交 `c48f47b`）
+- 新 IPA：292,005 字节，
+  SHA-256 `d020200659ac3e938182c6f6481a771709497090ffc7d9346d36eb427bb1d7ae`
+- 产物核验（6 项）：
+  - iPhone 主程序 `arm64` ✅
+  - Watch App 嵌入在 `Payload/DayEcho.app/Watch/DayEchoWatch.app/` ✅
+  - Watch 二进制 `arm64_32 + arm64` ✅
+  - 两端 bundle id 一致 ✅（版本号也一致 `1.0.0`）
+  - **两个 appex 都有真正的 `NSExtension` 字典** ✅
+  - 未签名（`code object is not signed at all`）⇒ 需侧载工具签名
+- 内容确认：主 app 含 `requiresOnDeviceRecognition`（强制端侧转写），
+  Watch app 含 `WatchCaptureCoordinator` + `transferFile:metadata:`
+- 送审包：`DayEcho-submission-20261117.zip`
+  （顶层单目录、94 个条目、14 个非 ASCII 名全部带 UTF-8 标志 0x800、
+  SHA256SUMS 93 条零失配、无凭据文件）
