@@ -583,7 +583,14 @@ watch_widget_target.build_configurations.each do |cfg|
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
   # ★ Widget Extension 的必需标记键 ★
-  s['INFOPLIST_KEY_NSExtensionPointIdentifier'] = 'com.apple.widgetkit-extension'
+  # ★ 必须用下划线嵌套写法 ★
+  # 写成 INFOPLIST_KEY_NSExtensionPointIdentifier（平铺）时，
+  # Xcode 会在 Info.plist 顶层生成一个 NSExtensionPointIdentifier key，
+  # **不会**生成 NSExtension 字典 —— 而 iOS 装 app extension 时
+  # 要求必须有 NSExtension 字典，否则报：
+  #   IXErrorDomain Code=2 Failed to create app extension placeholder
+  #   IXErrorDomain Code=17 extensionDictionary must be set
+  s['INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier'] = 'com.apple.widgetkit-extension'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
@@ -625,7 +632,14 @@ ios_widget_target.build_configurations.each do |cfg|
   s['SDKROOT'] = 'auto'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
-  s['INFOPLIST_KEY_NSExtensionPointIdentifier'] = 'com.apple.widgetkit-extension'
+  # ★ 必须用下划线嵌套写法 ★
+  # 写成 INFOPLIST_KEY_NSExtensionPointIdentifier（平铺）时，
+  # Xcode 会在 Info.plist 顶层生成一个 NSExtensionPointIdentifier key，
+  # **不会**生成 NSExtension 字典 —— 而 iOS 装 app extension 时
+  # 要求必须有 NSExtension 字典，否则报：
+  #   IXErrorDomain Code=2 Failed to create app extension placeholder
+  #   IXErrorDomain Code=17 extensionDictionary must be set
+  s['INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier'] = 'com.apple.widgetkit-extension'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''

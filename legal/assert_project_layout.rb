@@ -169,6 +169,61 @@ if ios_app
   end
 end
 
+# ---- 7. ★ widget extension 的 NSExtensionPointIdentifier 必须用嵌套写法 ★ ----
+#
+# ★★ 为什么要查 build setting 而不是查产物 plist ★★
+#
+# 2026-11-17 真机装机炸在这里：
+#   IXErrorDomain Code=2  Failed to create app extension placeholder for
+#                          .../DayEcho.app/PlugIns/DayEchoWidget.appex
+#   IXErrorDomain Code=17 extensionDictionary must be set in placeholder
+#                          attributes for an app extension placeholder
+#
+# 根因：xcodeproj 里写的是
+#   INFOPLIST_KEY_NSExtensionPointIdentifier      ← 平铺
+# 这是**平铺**写法 —— Xcode 会在 Info.plist **顶层**生成一个
+# `NSExtensionPointIdentifier` key，**不会**生成 `NSExtension` 字典。
+# 而 iOS 装 app extension 时 MobileInstallation 要求 placeholder 必须带
+# extensionDictionary（即 NSExtension 字典）⇒ 直接拒绝安装。
+#
+# ★ 正确写法（Xcode 支持用下划线表达嵌套字典）★
+#   INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier
+#
+# ★ 为什么必须在这里查 ★
+# 编译不关心 plist 结构，打包也不关心，只有真机安装才读 NSExtension
+# ⇒ 光靠「编译通过 + 打包成功」抓不到它。
+# 这条断言在**工程生成后、编译前**就把它拦下来。
+#
+# 注：产物级校验另有一道（CI 的 "Assert app extensions have NSExtension
+# dictionary" 步骤）—— 两道防线，一个查配置一个查产物。
+{
+  'DayEchoWidget' => 'com.apple.widgetkit-extension',
+  'DayEchoWatchWidget' => 'com.apple.widgetkit-extension',
+}.each do |name, expected|
+  t = target(project, name)
+  next unless t
+
+  flat = nil
+  nested = nil
+  t.build_configurations.each do |cfg|
+    bs = cfg.build_settings
+    flat ||= bs['INFOPLIST_KEY_NSExtensionPointIdentifier']
+    nested ||= bs['INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier']
+  end
+
+  if flat && !nested
+    failures << "#{name} 用了平铺的 INFOPLIST_KEY_NSExtensionPointIdentifier —— " \
+                 "Xcode 不会生成 NSExtension 字典，真机安装必报 " \
+                 "IXErrorDomain Code=17 (extensionDictionary must be set)。" \
+                 "应改为 INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier"
+  elsif nested != expected
+    failures << "#{name} 的 NSExtensionPointIdentifier 应为 #{expected.inspect}，" \
+                 "实际 #{nested.inspect}"
+  else
+    puts "  #{name} NSExtensionPointIdentifier（嵌套写法）= #{nested}"
+  end
+end
+
 puts
 if failures.empty?
   puts '✅ 全部通过'

@@ -647,6 +647,97 @@ jobs:
           echo "✅ watchOS App 已正确嵌入宿主包且判据全部正确"
 
       # ---- 10. 收集产物 ----
+# ============================================================
+# ★ 10. 断言所有 app extension 的 Info.plist 都有 NSExtension 字典 ★
+# ============================================================
+#
+# ★★ 为什么必须有这一步 ★★
+#
+# 2026-11-17 真机装机时炸在这里：
+#   Error: "APIInternalError"
+#   Error Domain=IXErrorDomain Code=2
+#     "Failed to create app extension placeholder for
+#      .../DayEcho.app/PlugIns/DayEchoWidget.appex"
+#   NSUnderlyingError: IXErrorDomain Code=17
+#     "extensionDictionary must be set in placeholder attributes
+#      for an app extension placeholder"
+#
+# ★ 根因 ★
+# xcodeproj 里写的是
+#   INFOPLIST_KEY_NSExtensionPointIdentifier
+# 这是**平铺**写法 —— Xcode 会在 Info.plist **顶层**生成一个
+# `NSExtensionPointIdentifier` key，**不会**生成 `NSExtension` 字典。
+#
+# 而 iOS 安装 app extension 时，MobileInstallation 要求 placeholder
+# 必须带 extensionDictionary（即 `NSExtension` 字典）⇒ 直接拒绝安装。
+#
+# ★ 为什么编译和打包都发现不了 ★
+# 编译不关心 plist 结构；打包（zip）也不关心。
+# 只有真机安装（MobileInstallation）才会去读 `NSExtension` 字典。
+# ⇒ 这个 bug 能一路绿灯跑到装机那一刻才炸。
+#
+# ★ 正确写法 ★
+#   INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier
+# （下划线嵌套 ⇒ Xcode 生成 NSExtension 字典里的那个 key）
+#
+# ⇒ 这条断言专门拦这个回归：任何 appex 缺 NSExtension 字典 ⇒ CI 失败。
+      - name: Assert app extensions have NSExtension dictionary
+        run: |
+          set -e
+          APP="$RUNNER_TEMP/DayEcho-device.xcarchive/Products/Applications/DayEcho.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::找不到 DayEcho.app"; exit 1
+          fi
+
+          FOUND_ANY=0
+          # iOS 侧的 appex
+          for EXT in "$APP"/PlugIns/*.appex; do
+            [ -d "$EXT" ] || continue
+            FOUND_ANY=1
+            PLIST="$EXT/Info.plist"
+            echo "--- 检查 $(basename "$EXT") ---"
+            if [ ! -f "$PLIST" ]; then
+              echo "::error::$(basename "$EXT") 没有 Info.plist"; exit 1
+            fi
+            if ! /usr/libexec/PlistBuddy -c "Print :NSExtension" "$PLIST" >/dev/null 2>&1; then
+              echo "::error::$(basename "$EXT") 的 Info.plist 缺 NSExtension 字典"
+              echo "--- 实际顶层 key ---"
+              plutil -p "$PLIST" | sed 's/^/    /'
+              echo "--- 根因 ---"
+              echo "    xcodeproj 里用了平铺的 INFOPLIST_KEY_NSExtensionPointIdentifier，"
+              echo "    应改为嵌套的 INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier，"
+              echo "    否则 Xcode 不会生成 NSExtension 字典。"
+              echo "    症状：真机安装报 IXErrorDomain Code=17"
+              echo "          extensionDictionary must be set in placeholder attributes"
+              exit 1
+            fi
+            echo "    ✅ 有 NSExtension 字典"
+            /usr/libexec/PlistBuddy -c "Print :NSExtension" "$PLIST" | sed 's/^/    /'
+          done
+
+          # watchOS 侧的 appex（在 Watch/DayEchoWatch.app/PlugIns/）
+          for EXT in "$APP"/Watch/*.app/PlugIns/*.appex; do
+            [ -d "$EXT" ] || continue
+            FOUND_ANY=1
+            PLIST="$EXT/Info.plist"
+            echo "--- 检查 $(basename "$EXT")（watch 侧）---"
+            if [ ! -f "$PLIST" ]; then
+              echo "::error::$(basename "$EXT") 没有 Info.plist"; exit 1
+            fi
+            if ! /usr/libexec/PlistBuddy -c "Print :NSExtension" "$PLIST" >/dev/null 2>&1; then
+              echo "::error::$(basename "$EXT") 的 Info.plist 缺 NSExtension 字典"
+              plutil -p "$PLIST" | sed 's/^/    /'
+              exit 1
+            fi
+            echo "    ✅ 有 NSExtension 字典"
+            /usr/libexec/PlistBuddy -c "Print :NSExtension" "$PLIST" | sed 's/^/    /'
+          done
+
+          if [ "$FOUND_ANY" = "0" ]; then
+            echo "::error::一个 appex 都没找到 —— 断言形同虚设"; exit 1
+          fi
+          echo "✅ 所有 app extension 都有 NSExtension 字典"
+
       - name: Collect artifacts
         if: always()
         run: |
