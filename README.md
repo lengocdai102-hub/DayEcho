@@ -331,6 +331,44 @@ CI 里现在有两条断言防它复发：一条静态查 pbxproj 三判据，
 为防同类问题复发，CI 里加了两道本地审计（跨模块 public API 可见性、32 位常量溢出），
 两道都做过破坏性验证；产物校验也加了对应断言防回归。
 
+**④ app extension 的 `Info.plist` 必须真的有 `NSExtension` 字典，否则真机装不上。**
+`xcodeproj` 里常见的写法是 `INFOPLIST_KEY_NSExtensionPointIdentifier`，
+但 Xcode 会把它当成**顶层散落 key**（或干脆不处理），
+**不会**生成 `NSExtension` 字典 —— 编译、打包、审计全绿，
+只有真机 `MobileInstallation` 才炸（`IXErrorDomain Code=2 / Code=17`
+`extensionDictionary must be set in placeholder attributes`）。
+实测三种写法：
+
+| 写法 | 产物 plist 结果 |
+|---|---|
+| `INFOPLIST_KEY_NSExtensionPointIdentifier` | 顶层散落 key，无 `NSExtension` 字典 |
+| `INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier` | **什么都没有**（Xcode 不处理） |
+| 真实 `Info.plist` 文件 + `GENERATE_INFOPLIST_FILE=NO` | ✅ 字典正确 |
+
+⇒ widget target 必须用**真实 Info.plist 文件**。
+CI 里有两道断言防它复发：工程生成后查 build setting + plist 内容，
+archive 后查**产物** appex 真有 `NSExtension` 字典。
+
+**⑤ iLoader 上游不支持带 Watch app 的 IPA —— `InvalidCompanionAppBundleIdentifier`。**
+iLoader 用 Personal Team 侧载时会把主 app 重写成 `<原id>.<TeamID>`，
+appex 也会跟着改，但 **Watch app 里的 `WKCompanionAppBundleIdentifier` 不会** ——
+因为上游 `isideload` 的 `update_bundle_id()` 只遍历 `app_extensions_mut()`
+（即 `PlugIns/*.appex`），`Watch/` 目录根本不在列表里。
+装到手机上就报：
+
+```
+Error: "InvalidCompanionAppBundleIdentifier"
+... Please set the WKCompanionAppBundleIdentifier key in the Watch app's
+Info.plist to the companion app's bundle identifier, "com.dayecho.app.<TeamID>".
+```
+
+**这不是包的缺陷** —— 未重签名的包里 `WKCompanionAppBundleIdentifier`
+写原始主 app id 是正确值。是 iLoader 的能力缺口。
+社区已有实测通过的实现：`Rzbck/isideload` + `Rzbck/iloader`
+的 `feat/watch-companion-support-20260909` 分支
+（会重写 Watch app 的 `WKCompanionAppBundleIdentifier` 与自身 bundle id，
+并在 iPhone 装完后通过配对 Watch 的 `streaming_zip_conduit` 单独装 Watch app）。
+
 ---
 
 ## 与 Auday 的定位差异
