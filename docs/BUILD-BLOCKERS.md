@@ -923,3 +923,108 @@ run `43918889269`：iOS simulator build 跑约 **45 分钟**后 hosted runner
 - 送审包：`DayEcho-submission-20261117.zip`
   （顶层单目录、94 个条目、14 个非 ASCII 名全部带 UTF-8 标志 0x800、
   SHA256SUMS 93 条零失配、无凭据文件）
+
+## 十二、2026-11-17 10:04：iLoader 报 InvalidCompanionAppBundleIdentifier
+
+### 12.1 现象
+
+`NSExtension` 那个坑修掉之后，CI 全绿、产物结构全对，
+但 iLoader 侧载时**换了个错**：
+
+```
+Error: "InvalidCompanionAppBundleIdentifier"
+ErrorDescription: "The Watch app contained within this app has an incorrect
+value, "com.dayecho.app", for the WKCompanionAppBundleIdentifier key in the
+Watch app's Info.plist. Please set the WKCompanionAppBundleIdentifier key in
+the Watch app's Info.plist to the companion app's bundle identifier,
+"com.dayecho.app.H98V6YZ5QL"."
+```
+
+阶段：`VerifyingApplication` -> `InvalidCompanionAppBundleIdentifier`。
+上次是 `InspectingPackage` 阶段的 `IXErrorDomain Code=2`，
+**说明上一轮的修复是真的生效了 —— 这次卡在了下一道关**。
+
+### 12.2 根因：不是我们的包有问题，是 iLoader 上游不支持 Watch app
+
+iLoader 用 Personal Team 侧载时会重写 bundle id：
+
+```
+main_app_id_str = format!("{}.{}", main_bundle_id, team.team_id)
+// -> com.dayecho.app.H98V6YZ5QL
+```
+
+日志第 1300 行证明 **appex 被正确重写了**：
+
+```
+Failed to set placeholder attributes com.dayecho.app.H98V6YZ5QL.widget
+```
+
+但 **Watch app 里的 `WKCompanionAppBundleIdentifier` 没被重写**，
+仍然是原始的 `com.dayecho.app`。
+
+**为什么？** 看 isideload 源码
+（`nab138/isideload`，`isideload/src/sideload/application.rs`）：
+
+```rust
+pub fn update_bundle_id(&mut self, main_app_bundle_id, main_app_id_str) {
+    let extensions = self.bundle.app_extensions_mut();  // <- 只遍历 PlugIns/*.appex
+    for ext in extensions.iter_mut() { ... }
+    self.bundle.set_bundle_identifier(main_app_id_str);
+}
+```
+
+- `app_extensions_mut()` **只含 `PlugIns/*.appex`**
+- Watch app 在 `Watch/DayEchoWatch.app`，**根本不在这个列表里**
+- 因此 Watch app 自己的 `CFBundleIdentifier` 也没被改
+- `WKCompanionAppBundleIdentifier` 更没人碰 ——
+  上游全仓 grep `WKCompanion` **零命中**
+
+**结论：上游 isideload 完全不认识 Watch app。**
+这是 iLoader 的能力缺口，不是 DayEcho 的包缺陷。
+
+### 12.3 社区已有解法
+
+`Rzbck/iloader-watch-companion`（社区独立工作，非官方发布）：
+
+| 项目 | 角色 | 已验证 revision |
+|---|---|---|
+| `Rzbck/isideload` | 图谱发现 / 配号 / id 重写 / 签名 | `f7b9f3da570edd6824c29680545e710846d07df5` |
+| `Rzbck/iloader` | 桌面集成 / 传输保持 / companion 安装编排 | `70f37e9b4afc659ab44ec1944c034093f4cda416` |
+
+README 明确写了 **"physically validated on a real iPhone and paired
+Apple Watch"**（iPhone 装机 + 启动 + Watch 装机 + 启动）。
+
+**关键实现**（`isideload/src/sideload/bundle.rs`）：
+
+```rust
+pub fn rewrite_embedded_bundle_ids(&mut self, main_app_bundle_id, main_app_id_str) {
+    for ext in self.app_extensions.iter_mut() { ... }
+
+    for watch_app in self.watch_apps.iter_mut() {
+        // 先校验：Watch app 声明的 companion id 必须等于原始主 app id
+        if companion_id != main_app_bundle_id { bail!(...) }
+
+        // 再重写：指向重写后的主 app id
+        watch_app.app_info.insert(
+            "WKCompanionAppBundleIdentifier".to_string(),
+            Value::String(main_app_id_str.to_string()),
+        );
+        Self::rewrite_child_bundle_id(watch_app, ...)?;  // Watch app 自身 id 也改
+    }
+}
+```
+
+配套还有 `watch_install.rs`：iPhone 装完后，**再通过配对 Watch 的
+`streaming_zip_conduit` 单独把 Watch app 装到手表上** ——
+因为 iPhone 侧安装只会留下一个 process-scoped placeholder。
+
+### 12.4 本轮结论
+
+- DayEcho 的包**结构没问题**：两个 appex 的 `NSExtension` 字典都在（实测）
+- DayEcho 的包**内容没问题**：`WKCompanionAppBundleIdentifier` 写的
+  `com.dayecho.app` 对**未重签名**的包是**正确值**
+- 卡点纯粹在 **iLoader 上游缺 Watch 支持**
+- 解法：换用 `Rzbck/iloader` 的 watch-companion 分支构建
+  （已下载预编译 `macos-dmg-universal`，无需本地装 Rust）
+- 待验证：该构建对 iOS 17 / watchOS 26 / 本机的实际表现
+  （上游文档只声明"已在真机验证"，未声明覆盖所有版本组合）
