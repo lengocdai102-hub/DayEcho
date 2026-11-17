@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>teacher</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<!--
+		★★ 这个字典是 app extension 能被安装的前提 ★★
+
+		真机装机时 MobileInstallation 要求每个 appex 的 placeholder
+		必须带 extensionDictionary，也就是这里的 NSExtension 字典。
+		缺了会报：
+
+		  IXErrorDomain Code=2
+		    Failed to create app extension placeholder for
+		      .../DayEcho.app/PlugIns/DayEchoWidget.appex
+		  IXErrorDomain Code=17
+		    extensionDictionary must be set in placeholder attributes
+		      for an app extension placeholder
+
+		★★ 为什么不能靠 build setting 生成 ★★
+		INFOPLIST_KEY_NSExtensionPointIdentifier（平铺）——
+		    Xcode 在顶层生成一个 NSExtensionPointIdentifier key，
+		    不会生成 NSExtension 字典。
+		INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier（嵌套）——
+		    Xcode **根本不处理**这个键，产物 plist 里连一个
+		    NSExtensionPointIdentifier 都没有。
+		⇒ 唯一可靠的做法就是提供真实的 Info.plist 文件。
+	-->
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
+	</dict>
+</dict>
+</plist>

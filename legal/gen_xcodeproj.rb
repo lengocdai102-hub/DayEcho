@@ -580,17 +580,23 @@ watch_widget_target.build_configurations.each do |cfg|
   s['TARGETED_DEVICE_FAMILY'] = '4'
   s['SUPPORTED_PLATFORMS'] = 'watchos watchsimulator'
   s['SDKROOT'] = 'auto'
-  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  # ★ 用真实的 Info.plist 文件，不用 GENERATE_INFOPLIST_FILE ★
+  #
+  # ★ 为什么必须用真实文件 ★
+  # 2026-11-17 真机装机炸在这里：
+  #   IXErrorDomain Code=2  Failed to create app extension placeholder for
+  #                          .../DayEcho.app/PlugIns/DayEchoWidget.appex
+  #   IXErrorDomain Code=17 extensionDictionary must be set in placeholder
+  #                          attributes for an app extension placeholder
+  #
+  # 根因：Xcode **不处理** INFOPLIST_KEY_NSExtensionPointIdentifier，
+  # 也不处理 INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier。
+  # 两种写法实测都不生成 NSExtension 字典
+  # （嵌套写法的产物 plist 里连一个 NSExtensionPointIdentifier 都没有）。
+  # ⇒ 只有提供真实 Info.plist 文件才可靠。
+  s['GENERATE_INFOPLIST_FILE'] = 'NO'
+  s['INFOPLIST_FILE'] = 'Sources/DayEchoWatchWidget/Info.plist'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
-  # ★ Widget Extension 的必需标记键 ★
-  # ★ 必须用下划线嵌套写法 ★
-  # 写成 INFOPLIST_KEY_NSExtensionPointIdentifier（平铺）时，
-  # Xcode 会在 Info.plist 顶层生成一个 NSExtensionPointIdentifier key，
-  # **不会**生成 NSExtension 字典 —— 而 iOS 装 app extension 时
-  # 要求必须有 NSExtension 字典，否则报：
-  #   IXErrorDomain Code=2 Failed to create app extension placeholder
-  #   IXErrorDomain Code=17 extensionDictionary must be set
-  s['INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier'] = 'com.apple.widgetkit-extension'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
@@ -614,6 +620,13 @@ watch_widget_files.each do |f|
   watch_widget_target.add_file_references([ref])
 end
 
+# ★ 真实 Info.plist 必须进 target 的文件列表，否则 Xcode 不会处理它 ★
+watch_widget_plist = File.join(ROOT, 'Sources/DayEchoWatchWidget/Info.plist')
+unless File.exist?(watch_widget_plist)
+  abort '★ 缺少 Sources/DayEchoWatchWidget/Info.plist —— widget extension 无法安装'
+end
+watch_widget_group.new_reference('Info.plist')
+
 # watch widget extension 依赖 intents framework（引用同一个 intent 类型）
 watch_widget_target.add_dependency(intents_target)
 watch_widget_target.frameworks_build_phase.add_file_reference(intents_target.product_reference)
@@ -630,16 +643,16 @@ ios_widget_target.build_configurations.each do |cfg|
   s['IPHONEOS_DEPLOYMENT_TARGET'] = IOS_MIN
   s['TARGETED_DEVICE_FAMILY'] = '1,2'
   s['SDKROOT'] = 'auto'
-  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  # ★ 用真实的 Info.plist 文件，不用 GENERATE_INFOPLIST_FILE ★
+  #
+  # 理由见 watch widget target 处的完整注释：
+  # Xcode 不处理 INFOPLIST_KEY_NSExtensionPointIdentifier，
+  # 也不处理 INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier，
+  # 两种写法实测都不生成 NSExtension 字典
+  # ⇒ 真机安装必报 IXErrorDomain Code=17 (extensionDictionary must be set)。
+  s['GENERATE_INFOPLIST_FILE'] = 'NO'
+  s['INFOPLIST_FILE'] = 'Sources/DayEchoWidget/Info.plist'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
-  # ★ 必须用下划线嵌套写法 ★
-  # 写成 INFOPLIST_KEY_NSExtensionPointIdentifier（平铺）时，
-  # Xcode 会在 Info.plist 顶层生成一个 NSExtensionPointIdentifier key，
-  # **不会**生成 NSExtension 字典 —— 而 iOS 装 app extension 时
-  # 要求必须有 NSExtension 字典，否则报：
-  #   IXErrorDomain Code=2 Failed to create app extension placeholder
-  #   IXErrorDomain Code=17 extensionDictionary must be set
-  s['INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier'] = 'com.apple.widgetkit-extension'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
@@ -661,6 +674,13 @@ ios_widget_files.each do |f|
   ref = ios_widget_group.new_reference(File.basename(f))
   ios_widget_target.add_file_references([ref])
 end
+
+# ★ 真实 Info.plist 必须进 target 的文件列表，否则 Xcode 不会处理它 ★
+ios_widget_plist = File.join(ROOT, 'Sources/DayEchoWidget/Info.plist')
+unless File.exist?(ios_widget_plist)
+  abort '★ 缺少 Sources/DayEchoWidget/Info.plist —— widget extension 无法安装'
+end
+ios_widget_group.new_reference('Info.plist')
 
 # ---- 5c-3. 嵌入 ----
 #

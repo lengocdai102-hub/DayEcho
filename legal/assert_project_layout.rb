@@ -169,9 +169,9 @@ if ios_app
   end
 end
 
-# ---- 7. ★ widget extension 的 NSExtensionPointIdentifier 必须用嵌套写法 ★ ----
+# ---- 7. ★ widget extension 必须用真实 Info.plist 且含 NSExtension 字典 ★ ----
 #
-# ★★ 为什么要查 build setting 而不是查产物 plist ★★
+# ★★ 为什么要查这个 ★★
 #
 # 2026-11-17 真机装机炸在这里：
 #   IXErrorDomain Code=2  Failed to create app extension placeholder for
@@ -179,48 +179,77 @@ end
 #   IXErrorDomain Code=17 extensionDictionary must be set in placeholder
 #                          attributes for an app extension placeholder
 #
-# 根因：xcodeproj 里写的是
-#   INFOPLIST_KEY_NSExtensionPointIdentifier      ← 平铺
-# 这是**平铺**写法 —— Xcode 会在 Info.plist **顶层**生成一个
-# `NSExtensionPointIdentifier` key，**不会**生成 `NSExtension` 字典。
-# 而 iOS 装 app extension 时 MobileInstallation 要求 placeholder 必须带
-# extensionDictionary（即 NSExtension 字典）⇒ 直接拒绝安装。
+# 根因（**两次踩坑实测**）：
+#   ① INFOPLIST_KEY_NSExtensionPointIdentifier（平铺）
+#      ⇒ Xcode 在 Info.plist 顶层生成 NSExtensionPointIdentifier key，
+#        **不生成** NSExtension 字典 ⇒ 装机失败。
+#   ② INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier（嵌套）
+#      ⇒ Xcode **根本不处理**这个键，
+#        产物 plist 里连一个 NSExtensionPointIdentifier 都没有
+#        ⇒ 装机依然失败。
 #
-# ★ 正确写法（Xcode 支持用下划线表达嵌套字典）★
-#   INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier
+# ⇒ 唯一可靠解：给 widget target 提供**真实 Info.plist 文件**，
+#   里面写 NSExtension 字典。
 #
 # ★ 为什么必须在这里查 ★
 # 编译不关心 plist 结构，打包也不关心，只有真机安装才读 NSExtension
 # ⇒ 光靠「编译通过 + 打包成功」抓不到它。
 # 这条断言在**工程生成后、编译前**就把它拦下来。
-#
-# 注：产物级校验另有一道（CI 的 "Assert app extensions have NSExtension
-# dictionary" 步骤）—— 两道防线，一个查配置一个查产物。
+# 产物级另有一道（CI 的 "Assert app extensions have NSExtension dictionary"）。
 {
-  'DayEchoWidget' => 'com.apple.widgetkit-extension',
-  'DayEchoWatchWidget' => 'com.apple.widgetkit-extension',
-}.each do |name, expected|
+  'DayEchoWidget' => 'Sources/DayEchoWidget/Info.plist',
+  'DayEchoWatchWidget' => 'Sources/DayEchoWatchWidget/Info.plist',
+}.each do |name, plist_rel|
   t = target(project, name)
   next unless t
 
-  flat = nil
-  nested = nil
+  gen = nil
+  plist_setting = nil
   t.build_configurations.each do |cfg|
     bs = cfg.build_settings
-    flat ||= bs['INFOPLIST_KEY_NSExtensionPointIdentifier']
-    nested ||= bs['INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier']
+    gen ||= bs['GENERATE_INFOPLIST_FILE']
+    plist_setting ||= bs['INFOPLIST_FILE']
   end
 
-  if flat && !nested
-    failures << "#{name} 用了平铺的 INFOPLIST_KEY_NSExtensionPointIdentifier —— " \
-                 "Xcode 不会生成 NSExtension 字典，真机安装必报 " \
-                 "IXErrorDomain Code=17 (extensionDictionary must be set)。" \
-                 "应改为 INFOPLIST_KEY_NSExtension_NSExtensionPointIdentifier"
-  elsif nested != expected
-    failures << "#{name} 的 NSExtensionPointIdentifier 应为 #{expected.inspect}，" \
-                 "实际 #{nested.inspect}"
+  # ① 不许用 GENERATE_INFOPLIST_FILE（生成式 plist 造不出 NSExtension 字典）
+  if gen.to_s.upcase == 'YES'
+    failures << "#{name} 仍在用 GENERATE_INFOPLIST_FILE=YES —— " \
+                 "Xcode 生成的 plist 不含 NSExtension 字典，" \
+                 "真机安装必报 IXErrorDomain Code=17。" \
+                 "必须改用真实 Info.plist 文件（INFOPLIST_FILE）。"
+  end
+
+  # ② 必须指定真实 Info.plist 路径
+  if plist_setting.to_s.empty?
+    failures << "#{name} 没设 INFOPLIST_FILE —— 必须指向真实 Info.plist"
+  elsif File.expand_path(plist_setting, ROOT) != File.expand_path(File.join(ROOT, plist_rel))
+    failures << "#{name} 的 INFOPLIST_FILE 指向 #{plist_setting.inspect}，" \
+                 "应为 #{plist_rel.inspect}"
+  end
+
+  # ③ 那个真实 plist 必须真的有 NSExtension 字典
+  abs = File.join(ROOT, plist_rel)
+  unless File.exist?(abs)
+    failures << "#{name} 的 Info.plist 不存在：#{abs}"
   else
-    puts "  #{name} NSExtensionPointIdentifier（嵌套写法）= #{nested}"
+    begin
+      plist = Xcodeproj::Plist.read_from_path(abs)
+      ext = plist['NSExtension']
+      if ext.nil?
+        failures << "#{plist_rel} 缺 NSExtension 字典 —— " \
+                     "真机安装必报 IXErrorDomain Code=17 " \
+                     "(extensionDictionary must be set)"
+      elsif ext['NSExtensionPointIdentifier'] != 'com.apple.widgetkit-extension'
+        failures << "#{plist_rel} 的 NSExtensionPointIdentifier 应为 " \
+                     "'com.apple.widgetkit-extension'，实际 " \
+                     "#{ext['NSExtensionPointIdentifier'].inspect}"
+      else
+        puts "  #{name}: #{plist_rel} 有 NSExtension 字典 " \
+             "(#{ext['NSExtensionPointIdentifier']})"
+      end
+    rescue => e
+      failures << "#{plist_rel} 解析失败：#{e.message}"
+    end
   end
 end
 
