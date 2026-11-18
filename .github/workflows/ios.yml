@@ -348,15 +348,34 @@ jobs:
       - name: Assert Widget Extensions have @main entry point
         run: |
           set -e
-          for f in Sources/DayEchoWidget/CaptureLiveActivityWidget.swift \
-                   Sources/DayEchoWatchWidget/CaptureControlWidget.swift; do
-            test -f "$f" || { echo "::error::找不到 $f"; exit 1; }
-            if ! grep -q '^@main' "$f"; then
-              echo "::error::$f 缺 @main —— Widget Extension 会产出没有入口的空壳 appex，真机拉起即 EXC_BREAKPOINT"
-              exit 1
-            fi
-            echo "✓ $f 有 @main"
-          done
+          python3 legal/assert_widget_entrypoints.py
+
+      # ---- 4a-2. 断言候选落账后一定刷新界面 ----
+      #
+      # ★ 为什么要断言这个 ★
+      #
+      # 2026-11-18 真机实锤：用户点「手动录入一句话」，
+      # 账本里明明多了一条候选，**待确认列表却完全不刷新**，
+      # 表现为「手动录入没成功」。
+      #
+      # 根因：`ReminderLedger` 是文件账本、**不是 ObservableObject**；
+      # 而 `pendingEntries` 是依赖 `ledgerRevision` 的计算属性。
+      # 落账后**必须** bump `ledgerRevision`（`refreshFromLedger()`），
+      # SwiftUI 才会重算这个属性。
+      #
+      # ★ 为什么单测抓不到 ★
+      #
+      # `DayEchoApp` 是 iOS 专属源码（import WatchConnectivity），
+      # SwiftPM 里**没有**它的 target（macOS 编译不了），
+      # 所以 `swift test` 覆盖不到这一层。
+      # 而纯逻辑单测测的是 `ledger.record()` 的返回值，
+      # 看不到界面刷新这一环。
+      #
+      # ⇒ 只能对**源码**做硬断言。
+      - name: Assert candidate ingest refreshes the UI
+        run: |
+          set -e
+          python3 legal/assert_candidate_refresh.py
 
       - name: Build iOS app (simulator)
         run: |
