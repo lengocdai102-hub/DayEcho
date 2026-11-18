@@ -252,7 +252,15 @@ watch_target.build_configurations.each do |cfg|
   s['SDKROOT'] = 'auto'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
   # ★ framework 的 rpath —— 没有它 dyld 找不到 DayEchoKit.framework ★
+  #
+  # ★ 两个键都要写 ★
+  # LD_RUNPATH_SEARCH_PATHS 是 Xcode 15+ 的新键，优先级高于旧的 LD_RUNPATH。
+  # 工程级默认已经带了 LD_RUNPATH_SEARCH_PATHS，
+  # 只写 LD_RUNPATH 会被工程级的 SEARCH_PATHS 覆盖，
+  # 结果产物里一个 LC_RPATH 都没有（实测 watch 二进制 rpath = <无 LC_RPATH>）。
   s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks'
+  s['LD_RUNPATH_SEARCH_PATHS'] =
+    '$(inherited) @executable_path/Frameworks @loader_path/Frameworks'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
   # ★ 现代 SwiftUI watch App 的必需标记键
   s['INFOPLIST_KEY_WKApplication'] = 'YES'
@@ -282,6 +290,8 @@ watch_target.build_configurations.each do |cfg|
   # 前台持续显示录音状态（用户能一眼看出在录音）
   # ★ watch app 的 framework rpath ★
   s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks'
+  s['LD_RUNPATH_SEARCH_PATHS'] =
+    '$(inherited) @executable_path/Frameworks @loader_path/Frameworks'
   s['INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents'] = 'YES'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
@@ -454,6 +464,20 @@ ios_target.build_configurations.each do |cfg|
   s['IPHONEOS_DEPLOYMENT_TARGET'] = IOS_MIN
   s['TARGETED_DEVICE_FAMILY'] = '1,2'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  # ★ framework 的 rpath —— 没有它 dyld 找不到 DayEchoKit.framework ★
+  #
+  # ★ 两个键都要写 ★
+  # LD_RUNPATH_SEARCH_PATHS 是 Xcode 15+ 的新键，优先级高于旧的 LD_RUNPATH。
+  # 工程级默认已经带了 LD_RUNPATH_SEARCH_PATHS，
+  # 只写 LD_RUNPATH 会被工程级的 SEARCH_PATHS 覆盖，
+  # 结果产物里 rpath 不是你以为的那条。
+  #
+  # ★ 这里是 iOS App target（不是 watch）★
+  # watch app 也设了 CFBundleDisplayName = teacher，
+  # 按显示名去定位会改错地方 —— 必须按 target 块定位。
+  s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks'
+  s['LD_RUNPATH_SEARCH_PATHS'] =
+    '$(inherited) @executable_path/Frameworks @loader_path/Frameworks'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
   s['INFOPLIST_KEY_UILaunchScreen_Generation'] = 'YES'
   s['INFOPLIST_KEY_UISupportedInterfaceOrientations'] = 'UIInterfaceOrientationPortrait'
@@ -599,7 +623,12 @@ watch_target.frameworks_build_phase.add_file_reference(intents_target.product_re
 # 用 $(CONTENTS_FOLDER_PATH)/Frameworks 让它跟着宿主走。
 watch_embed_frameworks = watch_target.new_copy_files_build_phase('Embed Frameworks')
 watch_embed_frameworks.symbol_dst_subfolder_spec = :frameworks
-watch_embed_frameworks.dst_path = '$(CONTENTS_FOLDER_PATH)/Frameworks'
+# ★ dst_path 必须留空 ★
+# dstSubfolderSpec = 10（frameworks）本身就已经表示
+# "$(CONTENTS_FOLDER_PATH)/Frameworks"，
+# 再写 dst_path = '$(CONTENTS_FOLDER_PATH)/Frameworks'
+# 就会变成 DayEchoWatch.app/Frameworks/DayEchoWatch.app/Frameworks/（多一层）。
+watch_embed_frameworks.dst_path = ''
 watch_embed_frameworks.add_file_reference(watch_kit_target.product_reference)
 watch_embed_frameworks.add_file_reference(intents_target.product_reference)
 watch_embed_frameworks.files.each do |bf|
@@ -637,6 +666,8 @@ watch_widget_target.build_configurations.each do |cfg|
   # appex 在 PlugIns/ 下，@executable_path 是 appex 自己，
   # 要用 ../.. 往上两级找宿主 watch app 的 Frameworks/。
   s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks'
+  s['LD_RUNPATH_SEARCH_PATHS'] =
+    '$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks @loader_path/Frameworks'
   s['PRODUCT_BUNDLE_IDENTIFIER'] = "#{WATCH_BUNDLE_ID}.widget"
   s['PRODUCT_NAME'] = 'DayEchoWatchWidget'
   s['MARKETING_VERSION'] = '1.0.0'
@@ -703,7 +734,10 @@ watch_widget_target.frameworks_build_phase.add_file_reference(intents_target.pro
 # 并且 appex 自己要有能解析到它的 rpath。
 watch_widget_embed_frameworks = watch_widget_target.new_copy_files_build_phase('Embed Frameworks')
 watch_widget_embed_frameworks.symbol_dst_subfolder_spec = :frameworks
-watch_widget_embed_frameworks.dst_path = '$(CONTENTS_FOLDER_PATH)/../../Frameworks'
+# ★ dst_path 必须留空 ★
+# spec=10 已经是 Contents/Frameworks；
+# 写成 ../../Frameworks 会多出一层 DayEchoWatchWidget.appex/Frameworks/Frameworks/。
+watch_widget_embed_frameworks.dst_path = ''
 watch_widget_embed_frameworks.add_file_reference(intents_target.product_reference)
 watch_widget_embed_frameworks.files.each do |bf|
   bf.settings = { 'ATTRIBUTES' => ['CodeSignOnCopy', 'RemoveHeadersOnCopy'] }
