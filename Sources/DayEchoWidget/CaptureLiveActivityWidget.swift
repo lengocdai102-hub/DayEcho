@@ -59,6 +59,29 @@ public struct CaptureActivityAttributes: ActivityAttributes {
 
 // MARK: - Widget Bundle
 
+/// ★ Widget Bundle —— 注册本 extension 里的所有 Widget ★
+///
+/// ★ 为什么这里必须写 `@main` ★
+///
+/// 2026-11-18 真机实锤：`DayEchoWidget.appex` 里**搜不到任何 widget 类型**
+/// （`CaptureLiveActivityWidget`、`DayEchoWidgets`、中文字符串全部为 0 命中），
+/// `otool -L` 也**没有链接 WidgetKit / SwiftUI** —— 只有 ActivityKit。
+/// 而同一时刻系统拉起这个 appex 直接 `EXC_BREAKPOINT` 崩掉。
+///
+/// 原因：**Widget Extension 的入口不是 `WidgetBundle` 本身**。
+/// `WidgetBundle` 是一个**协议**，只声明了「这个 extension 里有哪些 widget」，
+/// 它**不是**可执行入口。extension 的入口必须是
+/// `@main struct X: WidgetBundle { ... }` —— Swift 靠 `@main`
+/// 生成 `NSExtensionMain` 并把 bundle body 里的 widget 注册进去。
+///
+/// 没有 `@main` ⇒ 编译能过（`WidgetBundle` 只是个普通 struct），
+/// 但整个 extension 没有任何符号引用 `DayEchoWidgets`
+/// ⇒ 链接器把它当死代码丢掉 ⇒ 产出**没有入口的空壳 appex**
+/// ⇒ 系统加载时找不到入口 ⇒ `EXC_BREAKPOINT`。
+///
+/// 这类 bug 静态检查（编译通过、CI 全绿）抓不到，
+/// 只有真机装上、系统拉起 extension 才会暴露。
+@main
 struct DayEchoWidgets: WidgetBundle {
     var body: some Widget {
         CaptureLiveActivityWidget()

@@ -212,6 +212,45 @@ jobs:
           ruby legal/gen_xcodeproj.rb
           ls -la DayEcho.xcodeproj
 
+      # ---- 3b. 生成应用图标 ----
+      #
+      # ★ 为什么必须单独一步 ★
+      #
+      # 2026-11-18 真机实锤：`Assets.car` 里**没有 AppIcon**
+      # （`grep -c 'AppIcon' Assets.car` = 0），
+      # 主 App 在桌面上显示为**白色方块**。
+      #
+      # 根因：`Resources/Assets.xcassets/AppIcon.appiconset/Contents.json`
+      # 声明了 `AppIcon-1024.png`，但仓库里**从来没有这个文件** ——
+      # 只有 `legal/AppIcon-1024.png`（2048x2048 且带 alpha）。
+      # actool 找不到文件就静默跳过 ⇒ 产出无图标 app。
+      #
+      # ★ 为什么不能用 `sips` ★
+      #
+      # `sips` 无法去掉 alpha 通道（输出仍是 colortype 6 = RGBA），
+      # 而 App Store / actool 对 1024 图标要求**无 alpha**（colortype 2）。
+      # 所以自己写 PNG 编解码：`legal/make_appicon.py`。
+      - name: Generate app icon
+        run: |
+          set -e
+          python3 legal/make_appicon.py
+          # 硬断言：文件必须存在、尺寸对、且**不带 alpha**
+          ICON="Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
+          test -f "$ICON" || { echo "::error::图标没生成"; exit 1; }
+          python3 - <<'PY'
+          import struct, sys
+          p = "Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"
+          d = open(p, "rb").read()
+          if d[:8] != b"\x89PNG\r\n\x1a\n":
+              print("::error::不是 PNG"); sys.exit(1)
+          w, h, depth, color = struct.unpack(">IIBB", d[16:26])
+          if (w, h) != (1024, 1024):
+              print(f"::error::图标尺寸 {w}x{h} != 1024x1024"); sys.exit(1)
+          if color != 2:
+              print(f"::error::图标带 alpha 通道（colortype={color}），actool 会拒绝"); sys.exit(1)
+          print(f"✓ 图标合规 {w}x{h} colortype={color}")
+          PY
+
       # ---- 4. 编译 iOS App（模拟器架构，验证能编过）----
       # 用 -destination 而不是 -sdk：
       # -sdk iphonesimulator 会把所有 target 的 SDKROOT 覆盖成 iphonesimulator，
@@ -285,6 +324,39 @@ jobs:
         run: |
           set -e
           ruby legal/assert_project_layout.rb
+
+      # ---- 4a-1. 断言两个 Widget Extension 都有 @main 入口 ----
+      #
+      # ★ 为什么要断言这个 ★
+      #
+      # 2026-11-18 真机实锤：`DayEchoWidget.appex` 里
+      # `grep -c 'CaptureLiveActivityWidget'` = 0、`DayEchoWidgets` = 0，
+      # `otool -L` **没有链接 WidgetKit / SwiftUI**（只有 ActivityKit）。
+      # 系统一拉起这个 appex 就 `EXC_BREAKPOINT` 崩掉。
+      #
+      # 根因：`WidgetBundle` 只是**协议**，不是可执行入口。
+      # extension 的入口必须是 `@main struct X: WidgetBundle`。
+      # 没有 `@main` ⇒ 链接器把整个 bundle 当死代码丢掉
+      # ⇒ 产出**没有入口的空壳 appex**。
+      #
+      # ★ 为什么编译通过、CI 也全绿 ★
+      #
+      # `WidgetBundle` 本身是合法的普通 struct，编译器不报错；
+      # 空壳 appex 也能正常产出、正常安装。
+      # ⇒ 静态检查完全抓不到，只有真机拉起 extension 才暴露。
+      # 所以必须在 CI 里对**源码**硬断言。
+      - name: Assert Widget Extensions have @main entry point
+        run: |
+          set -e
+          for f in Sources/DayEchoWidget/CaptureLiveActivityWidget.swift \
+                   Sources/DayEchoWatchWidget/CaptureControlWidget.swift; do
+            test -f "$f" || { echo "::error::找不到 $f"; exit 1; }
+            if ! grep -q '^@main' "$f"; then
+              echo "::error::$f 缺 @main —— Widget Extension 会产出没有入口的空壳 appex，真机拉起即 EXC_BREAKPOINT"
+              exit 1
+            fi
+            echo "✓ $f 有 @main"
+          done
 
       - name: Build iOS app (simulator)
         run: |

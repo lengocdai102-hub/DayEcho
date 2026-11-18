@@ -287,6 +287,12 @@ watch_target.build_configurations.each do |cfg|
   # 是给闹钟/正念/理疗这类短时场景设计的，用来做全天录音会被系统掐断。
   # 这里把 WKExtendedRuntimeSession 当作补充保活手段，UIBackgroundModes 才是主力。
   s['INFOPLIST_KEY_UIBackgroundModes'] = ['audio']
+  # ★ watch 图标集名 ★
+  #
+  # watchOS 的图标集叫 `WatchAppIcon.appiconset`（不是 iOS 的 `AppIcon`）。
+  # 不设这个键 ⇒ actool 不会为 watch target 编译任何图标
+  # ⇒ 手表桌面上**根本没有图标**（用户报「Watch 上找不到 teacher」）。
+  s['ASSETCATALOG_COMPILER_APPICON_NAME'] = 'WatchAppIcon'
   # 前台持续显示录音状态（用户能一眼看出在录音）
   # ★ watch app 的 framework rpath ★
   s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks'
@@ -430,6 +436,19 @@ catalog_path = File.join(ROOT, 'Resources/Assets.xcassets')
 if File.directory?(catalog_path)
   catalog = res_group.new_file(catalog_path)
   ios_target.add_resources([catalog])
+
+  # ★ watch target 也要挂同一个 asset catalog ★
+  #
+  # 2026-11-18 真机实锤：手表桌面上**找不到 teacher**（白图标/无图标）。
+  #
+  # 根因：xcassets **只**加进了 `ios_target` 的 Resources phase，
+  # `watch_target` 完全没有 asset catalog ⇒ actool 从未为 watch
+  # 编译任何图标资源 ⇒ 手表上根本没有图标可显示。
+  #
+  # watchOS 的图标集叫 `WatchAppIcon.appiconset`，
+  # 和 iOS 的 `AppIcon.appiconset` 在**同一个** xcassets 里，
+  # 通过 `platform: watchos` 区分。
+  watch_target.add_resources([catalog])
 end
 
 privacy = res_group.new_file(File.join(ROOT, 'legal/privacy_policy.html'))

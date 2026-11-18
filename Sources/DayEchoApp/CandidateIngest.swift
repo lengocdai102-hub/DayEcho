@@ -144,6 +144,13 @@ extension DayEchoModel {
             added += ledger.record(tiered).count
         }
         if added > 0 {
+            // ★ 落账后必须通知界面刷新 ★
+            //
+            // 与 `ingestManualText` 同理：`ReminderLedger` 不是
+            // `ObservableObject`，`pendingEntries` 依赖 `ledgerRevision`。
+            // 不 bump 的话，Share 扩展 / 快捷指令投进来的候选
+            // 同样「落账了但界面不显示」。
+            refreshFromLedger()
             statusMessage = "新增 \(added) 条待确认提醒。"
         }
         return added
@@ -156,6 +163,24 @@ extension DayEchoModel {
     func ingestManualText(_ text: String, source: IngestionSource = .shortcutIntent) -> Int {
         let tiered = IngestionPipeline.ingest(text: text, source: source)
         let added = ledger.record(tiered).count
+        // ★ 手动录入必须自己通知界面刷新 ★
+        //
+        // ★ 为什么不能只靠 `.dayEchoCandidatesChanged` 通知 ★
+        //
+        // 转写路径落账后会发 `Notification.Name.dayEchoCandidatesChanged`，
+        // `ContentView` 收到后调 `refreshFromLedger()`。
+        // 但**手动录入这条路没有发那个通知** ——
+        // 而 `pendingEntries` 是依赖 `ledgerRevision` 的计算属性，
+        // `ReminderLedger` 本身不是 `ObservableObject`。
+        //
+        // ⇒ 结果：账本里明明多了一条，`ledgerRevision` 没变，
+        // SwiftUI 认为这个值「从未变化」，**待确认列表不重画**。
+        // 用户看到的是「点了加入待确认，什么都没出现」，
+        // 也就是「手动录入没成功」。
+        //
+        // 这类 bug 只在真机上点按钮才暴露 —— 单测测的是
+        // `ledger.record()` 的返回值，看不到界面这一层。
+        refreshFromLedger()
         statusMessage = added > 0 ? "新增 \(added) 条待确认提醒。" : "这段话里没找到带时间的安排。"
         return added
     }

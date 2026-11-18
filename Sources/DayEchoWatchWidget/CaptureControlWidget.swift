@@ -40,11 +40,24 @@ import DayEchoIntents
 ///
 /// 症状是「代码都写了，但表盘编辑里找不到这个选项」，
 /// 而且编译完全通过 —— 纯靠真机点表盘才能发现。
+@main
 struct DayEchoWatchWidgets: WidgetBundle {
     var body: some Widget {
         DayEchoCaptureControl()
     }
 }
+
+/// ★ extension 的真正入口 ★
+///
+/// ★ 为什么必须单独写 `@main` ★
+///
+/// 同 iOS widget：`WidgetBundle` 只是协议，不是可执行入口。
+/// 没有 `@main` ⇒ 链接器把整个 extension 当死代码丢掉
+/// ⇒ 产出**没有入口的空壳 appex**
+/// ⇒ 表盘 complication 列表里根本找不到「一键抓拍」。
+///
+/// 症状是「编译完全通过，但表盘编辑里没有这个选项」，
+/// 静态检查和 CI 全绿都抓不到，只有真机点表盘才能发现。
 
 // MARK: - Control Widget
 
