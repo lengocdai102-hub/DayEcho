@@ -579,6 +579,30 @@ jobs:
           fi
           echo "✅ 真机 arm64 二进制确认"
 
+      # ---- 8b. 验证 @rpath 依赖在包内可解析（防「启动即闪退」）----
+      #
+      # ★ 这个断言是为了防一个已经真机踩过的坑 ★
+      #
+      # 症状：CI 全绿，装到 iPhone 上点开闪退，什么都看不到。
+      #
+      # 根因：主二进制链接 @rpath/DayEchoKit.framework/DayEchoKit，
+      #   LC_RPATH 是 @executable_path/Frameworks，
+      #   但 xcode 工程里**从来没有 "Embed Frameworks" 构建阶段**
+      #   ⇒ DayEchoKit.framework 只被链接、从没被拷贝进 .app
+      #   ⇒ .app/Frameworks/ 目录不存在
+      #   ⇒ dyld 找不到库 ⇒ 启动即被系统杀掉。
+      #
+      # 为什么编译期发现不了：链接期只需要 framework 的二进制，
+      # 不需要它出现在产物包里 —— 这是**打包期**问题，编译/链接全程无感。
+      #
+      # ⇒ 这里用 otool 逐个二进制解析 @rpath 依赖，
+      #   并按 LC_RPATH 在包内实际定位文件，定位不到就直接 exit 1。
+      - name: Verify @rpath dependencies resolve inside the bundle
+        run: |
+          set -e
+          APP="$RUNNER_TEMP/DayEcho-device.xcarchive/Products/Applications/DayEcho.app"
+          python3 legal/assert_rpath_resolves.py "$APP"
+
       # ---- 9. 验证 watchOS App 已嵌入 iOS 包 ----
       # 这是最容易悄悄坏掉的地方：watch target 编过了，但没被
       # "Embed Watch Content" 阶段塞进 .app，装到手机上会没有手表 App。

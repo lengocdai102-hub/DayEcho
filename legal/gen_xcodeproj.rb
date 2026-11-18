@@ -251,6 +251,8 @@ watch_target.build_configurations.each do |cfg|
   # 这样 Xcode 才能在 iOS 构建时正确产出并嵌入 watch 变体。
   s['SDKROOT'] = 'auto'
   s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  # ★ framework 的 rpath —— 没有它 dyld 找不到 DayEchoKit.framework ★
+  s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks'
   s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
   # ★ 现代 SwiftUI watch App 的必需标记键
   s['INFOPLIST_KEY_WKApplication'] = 'YES'
@@ -278,6 +280,8 @@ watch_target.build_configurations.each do |cfg|
   # 这里把 WKExtendedRuntimeSession 当作补充保活手段，UIBackgroundModes 才是主力。
   s['INFOPLIST_KEY_UIBackgroundModes'] = ['audio']
   # 前台持续显示录音状态（用户能一眼看出在录音）
+  # ★ watch app 的 framework rpath ★
+  s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks'
   s['INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents'] = 'YES'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
@@ -334,6 +338,43 @@ end
 # ============================================================
 ios_target.add_dependency(kit_target)
 ios_target.frameworks_build_phase.add_file_reference(kit_target.product_reference)
+
+# ★★★ "Embed Frameworks" 阶段 —— 缺了它，App 启动即崩 ★★★
+#
+# ★ 症状 ★
+# 装到 iPhone 上，图标点开闪退，什么都看不到。
+#
+# ★ 根因（硬证据）★
+# 主二进制 DayEcho 链接的是 @rpath/DayEchoKit.framework/DayEchoKit，
+# 而它的 LC_RPATH 是 @executable_path/Frameworks
+# ⇒ dyld 会在 DayEcho.app/Frameworks/ 里找 DayEchoKit.framework。
+#
+# 但 xcode 工程里**从来没有 "Embed Frameworks" 构建阶段**
+# （只有 "Embed Watch Content" 和 "Embed Widget Extensions"），
+# ⇒ DayEchoKit.framework 只被「链接」，从没被「拷贝」进 .app
+# ⇒ DayEcho.app/Frameworks/ 目录根本不存在
+# ⇒ dyld 找不到库 ⇒ 启动即被系统杀掉（表现为闪退）。
+#
+# ★ 为什么编译期不报错 ★
+# 链接期只需要 framework 的二进制，不需要它出现在产物包里。
+# 缺 Embed 阶段是**打包期**问题，编译/链接全程无感。
+# 这就是为什么 CI 全绿、真机却起不来。
+#
+# ★ 为什么之前没被发现 ★
+# CI 的校验只查了 Watch/ 目录和 PlugIns/ 目录，
+# 从来没查过 Frameworks/ 目录，也没人跑过 otool -L 看 rpath 依赖。
+#
+# ★ 参考真实 Xcode 工程 ★
+# Xcode 自己生成的工程里，App target 一定有一个 "Embed Frameworks"
+# 阶段，dstSubfolderSpec = 10（frameworks），dst_path = ""，
+# build file 带 ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy)。
+embed_frameworks = ios_target.new_copy_files_build_phase('Embed Frameworks')
+embed_frameworks.symbol_dst_subfolder_spec = :frameworks
+embed_frameworks.dst_path = ''
+embed_frameworks.add_file_reference(kit_target.product_reference)
+embed_frameworks.files.each do |bf|
+  bf.settings = { 'ATTRIBUTES' => ['CodeSignOnCopy', 'RemoveHeadersOnCopy'] }
+end
 
 # iOS App 依赖 watchOS App
 ios_target.add_dependency(watch_target)
@@ -544,6 +585,27 @@ end
 watch_target.add_dependency(intents_target)
 watch_target.frameworks_build_phase.add_file_reference(intents_target.product_reference)
 
+# ★ watchOS App 同样需要 "Embed Frameworks" ★
+#
+# watch app 二进制链接 @rpath/DayEchoKit.framework/DayEchoKit
+# 和 @rpath/DayEchoIntents.framework/DayEchoIntents，
+# 但 watchOS target **连 LC_RPATH 都没有**（Xcode 只给 iOS App 默认值），
+# 且同样缺 "Embed Frameworks" 阶段。
+# ⇒ 手表上装完点开也是白屏/闪退。
+#
+# ★ dst_path 必须显式写 ★
+# watch app 的产物在 .app/Watch/DayEchoWatch.app/ 内，
+# Frameworks 要落在 DayEchoWatch.app/Frameworks/。
+# 用 $(CONTENTS_FOLDER_PATH)/Frameworks 让它跟着宿主走。
+watch_embed_frameworks = watch_target.new_copy_files_build_phase('Embed Frameworks')
+watch_embed_frameworks.symbol_dst_subfolder_spec = :frameworks
+watch_embed_frameworks.dst_path = '$(CONTENTS_FOLDER_PATH)/Frameworks'
+watch_embed_frameworks.add_file_reference(watch_kit_target.product_reference)
+watch_embed_frameworks.add_file_reference(intents_target.product_reference)
+watch_embed_frameworks.files.each do |bf|
+  bf.settings = { 'ATTRIBUTES' => ['CodeSignOnCopy', 'RemoveHeadersOnCopy'] }
+end
+
 # ============================================================
 # 5c. Widget Extensions（阶段 2.1）
 # ============================================================
@@ -571,6 +633,10 @@ watch_target.frameworks_build_phase.add_file_reference(intents_target.product_re
 watch_widget_target = project.new_target(:app_extension, 'DayEchoWatchWidget', :watchos, WATCH_MIN)
 watch_widget_target.build_configurations.each do |cfg|
   s = cfg.build_settings
+  # ★ watch widget 的 framework rpath ★
+  # appex 在 PlugIns/ 下，@executable_path 是 appex 自己，
+  # 要用 ../.. 往上两级找宿主 watch app 的 Frameworks/。
+  s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks'
   s['PRODUCT_BUNDLE_IDENTIFIER'] = "#{WATCH_BUNDLE_ID}.widget"
   s['PRODUCT_NAME'] = 'DayEchoWatchWidget'
   s['MARKETING_VERSION'] = '1.0.0'
@@ -630,6 +696,18 @@ watch_widget_group.new_reference('Info.plist')
 # watch widget extension 依赖 intents framework（引用同一个 intent 类型）
 watch_widget_target.add_dependency(intents_target)
 watch_widget_target.frameworks_build_phase.add_file_reference(intents_target.product_reference)
+
+# ★ watch widget extension 链接 @rpath/DayEchoIntents.framework/DayEchoIntents ★
+# 它装在 DayEchoWatch.app/PlugIns/DayEchoWatchWidget.appex/ 里，
+# 所以框架要落在 DayEchoWatch.app/Frameworks/（与宿主 watch app 共用），
+# 并且 appex 自己要有能解析到它的 rpath。
+watch_widget_embed_frameworks = watch_widget_target.new_copy_files_build_phase('Embed Frameworks')
+watch_widget_embed_frameworks.symbol_dst_subfolder_spec = :frameworks
+watch_widget_embed_frameworks.dst_path = '$(CONTENTS_FOLDER_PATH)/../../Frameworks'
+watch_widget_embed_frameworks.add_file_reference(intents_target.product_reference)
+watch_widget_embed_frameworks.files.each do |bf|
+  bf.settings = { 'ATTRIBUTES' => ['CodeSignOnCopy', 'RemoveHeadersOnCopy'] }
+end
 
 # ---- 5c-2. iOS Widget Extension（Live Activity 界面）----
 ios_widget_target = project.new_target(:app_extension, 'DayEchoWidget', :ios, IOS_MIN)
