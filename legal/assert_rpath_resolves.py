@@ -62,6 +62,33 @@ def read_rpaths(binary):
     return [m.group(1) for m in re.finditer(r"path (\S+) \(offset", out)]
 
 
+def read_install_name(binary):
+    """读二进制自己的 LC_ID_DYLIB（安装名），没有则返回 None。
+
+    ★ 为什么必须单独排除 ★
+
+    framework 二进制的安装名就是 @rpath/X.framework/X（dylib 的 install name
+    决定它被加载时去哪里找）。
+    而 `otool -L` 会把 LC_ID_DYLIB 也当作一行依赖列出来
+    ⇒ 于是 @rpath/X.framework/X 既出现在「依赖列表」里，
+      又正是「这个二进制自己」⇒ 拿它去包内解析，
+      等于让它自己找自己，必然失败 ⇒ 假阳性。
+
+    实证（CI run 44238320193）：
+      检查 8 个二进制 / 解析 14 条 @rpath 依赖，
+      失败项全部是 framework 二进制自身（DayEchoKit / DayEchoIntents），
+      而真正的宿主二进制（DayEcho / DayEchoWatch / DayEchoWatchWidget）
+      一条都没有 ⇒ 打包其实已经是好的，是校验器错了。
+    """
+    out = subprocess.run(
+        ["otool", "-l", binary], capture_output=True, text=True
+    ).stdout
+    m = re.search(
+        r"cmd LC_ID_DYLIB.*?name (\S+) \(offset", out, re.S
+    )
+    return m.group(1) if m else None
+
+
 def read_dependencies(binary):
     out = subprocess.run(
         ["otool", "-L", binary], capture_output=True, text=True
@@ -71,6 +98,10 @@ def read_dependencies(binary):
         line = line.strip()
         if line.startswith("@rpath/"):
             deps.append(line.split(" ")[0])
+    # ★ 排除安装名自身（framework 的 @rpath/X.framework/X）★
+    install_name = read_install_name(binary)
+    if install_name:
+        deps = [d for d in deps if d != install_name]
     return deps
 
 
