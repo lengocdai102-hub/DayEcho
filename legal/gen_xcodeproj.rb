@@ -764,6 +764,15 @@ watch_widget_target.build_configurations.each do |cfg|
   s['ENABLE_APP_INTENTS_METADATA_GENERATION'] = 'YES'
   # ★ widget extension 只能引用扩展安全的 API ★
   s['APPLICATION_EXTENSION_API_ONLY'] = 'YES'
+  # ★ App Group entitlements（默认不挂）★
+  # 见文件顶部 USE_APP_GROUP 说明。
+  #
+  # ★ 为什么 Watch Widget 也要 ★
+  # Watch Widget 有独立沙盒；没有 App Group 就读不到
+  # Watch App / iPhone 主 App 写在共享目录里的数据。
+  if USE_APP_GROUP
+    s['CODE_SIGN_ENTITLEMENTS'] = 'legal/DayEchoWatchApp.entitlements'
+  end
 end
 
 watch_widget_files = Dir.glob(File.join(ROOT, 'Sources/DayEchoWatchWidget/**/*.swift'))
@@ -834,6 +843,21 @@ ios_widget_target.build_configurations.each do |cfg|
   s['SWIFT_STRICT_CONCURRENCY'] = 'complete'
   s['ENABLE_APP_INTENTS_METADATA_GENERATION'] = 'YES'
   s['APPLICATION_EXTENSION_API_ONLY'] = 'YES'
+  # ★ App Group entitlements（默认不挂）★
+  # 见文件顶部 USE_APP_GROUP 说明。
+  #
+  # ★ 为什么 Widget 也必须要 ★
+  # Widget 有**独立沙盒**。没有 App Group entitlement 时，
+  # 主 App 写进共享目录的数据，Widget 一个字都读不到
+  # ⇒ Widget 侧的共享功能**静默失效**（不报错，只是数据不对）。
+  #
+  # ★ 实测踩过 ★
+  # 2026-11-19 之前 Widget target 压根没配 CODE_SIGN_ENTITLEMENTS，
+  # 签名信息里只有 Xcode 自动加的 application-identifier，
+  # 没有任何 app-group ⇒ Widget 与主 App 是两个互不可见的世界。
+  if USE_APP_GROUP
+    s['CODE_SIGN_ENTITLEMENTS'] = 'legal/DayEchoApp.entitlements'
+  end
 end
 
 ios_widget_files = Dir.glob(File.join(ROOT, 'Sources/DayEchoWidget/**/*.swift'))
