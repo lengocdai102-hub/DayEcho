@@ -40,7 +40,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REQUIRED = {
     os.path.join("Sources", "DayEchoApp", "Info.plist"): {
         "CFBundleDisplayName": "DayEcho",
-        "UIBackgroundModes": ["audio", "processing"],
+        "UIBackgroundModes": ["audio"],
         "NSSupportsLiveActivities": True,
         "NSMicrophoneUsageDescription": None,
         "NSSpeechRecognitionUsageDescription": None,
@@ -50,13 +50,13 @@ REQUIRED = {
     },
     os.path.join("Sources", "DayEchoWatchApp", "Info.plist"): {
         "CFBundleDisplayName": "DayEcho",
-        "UIBackgroundModes": ["audio", "processing"],
+        "UIBackgroundModes": ["audio"],
         "WKApplication": True,
         # ★ 必须是真实字面量，不能是 $(BUNDLE_ID) ★
         # BUNDLE_ID 是 gen_xcodeproj.rb 的 Ruby 局部变量，不是 build setting，
         # Xcode 不会替换它 ⇒ 产物里会留下 "$(BUNDLE_ID)" ⇒ companion 指针失效
         # ⇒ 手表端装不上 / 认不出手机上的 app。
-        "WKCompanionAppBundleIdentifier": "com.dayecho.app",
+        "WKCompanionAppBundleIdentifier": "com.dayecho.app.H98V6YZ5QL",
         "WKRunsIndependentlyOfCompanionApp": False,
         "NSMicrophoneUsageDescription": None,
         "NSSpeechRecognitionUsageDescription": None,
