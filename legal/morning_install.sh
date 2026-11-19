@@ -171,8 +171,8 @@ echo
 echo "  ★ 还需要你在设备上做（我看不到屏幕）："
 echo "    1. 主 App 图标是不是不再是白色方块"
 echo "    2. 「手动录入一句话」后待确认列表有没有出现候选"
-echo "    3. 长按主屏幕 → 加小组件 → 搜 teacher，看 Widget 能不能加"
-echo "    4. Apple Watch 上有没有出现 teacher"
+echo "    3. 长按主屏幕 → 加小组件 → 搜 DayEcho，看 Widget 能不能加"
+echo "    4. Apple Watch 上有没有出现 DayEcho"
 echo "    5. Watch 弹「信任」时点信任"
 echo
 echo "===== 完成  $(date '+%F %T') ====="

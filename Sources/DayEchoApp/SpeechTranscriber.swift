@@ -36,7 +36,7 @@ public actor SpeechTranscriber {
         public var description: String {
             switch self {
             case .notAuthorized:
-                return "没有语音识别权限。请到「设置 › 隐私与安全性 › 语音识别」里允许 teacher 使用语音识别。"
+                return "没有语音识别权限。请到「设置 › 隐私与安全性 › 语音识别」里允许 DayEcho 使用语音识别。"
             case .restricted:
                 return "本设备的语音识别受系统限制，无法使用。"
             case .localeUnsupported(let locale):

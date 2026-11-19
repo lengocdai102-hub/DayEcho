@@ -27,7 +27,7 @@ struct ContentView: View {
                 sessionsSection
                 exportSection
             }
-            .navigationTitle("teacher")
+            .navigationTitle("DayEcho")
             // ★ 候选变了 ⇒ 重新读账本 ★
             //
             // ★ 为什么需要这个 ★

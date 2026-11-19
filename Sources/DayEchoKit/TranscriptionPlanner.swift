@@ -100,7 +100,7 @@ public struct TranscriptionPlanner {
         switch context.authorization {
         case .denied:
             return .impossible(
-                reason: "没有语音识别权限。请到「设置 › 隐私与安全性 › 语音识别」里允许 teacher 使用语音识别。"
+                reason: "没有语音识别权限。请到「设置 › 隐私与安全性 › 语音识别」里允许 DayEcho 使用语音识别。"
             )
         case .restricted:
             return .impossible(reason: "本设备的语音识别受系统限制，无法使用。")
@@ -109,7 +109,7 @@ public struct TranscriptionPlanner {
             // 「尚未申请」听起来像 App 的问题，用户不知道该做什么。
             // 明确告诉他「弹窗里允许」或「去哪里手动开」，才是可执行的下一步。
             return .impossible(
-                reason: "尚未申请语音识别权限。请在系统弹窗中允许 teacher 使用语音识别；若已误点拒绝，请到「设置 › 隐私与安全性 › 语音识别」中开启。"
+                reason: "尚未申请语音识别权限。请在系统弹窗中允许 DayEcho 使用语音识别；若已误点拒绝，请到「设置 › 隐私与安全性 › 语音识别」中开启。"
             )
         case .authorized:
             break

@@ -100,7 +100,7 @@ final class PhoneReceiverModel: ObservableObject {
             //
             // 语音识别权限必须**在用户主动触发时**申请。
             // 一进 App 就弹权限框，用户还没用到这个功能，
-            // 看到的是「teacher 想用麦克风」⇒ 大概率直接拒绝。
+            // 看到的是「DayEcho 想用麦克风」⇒ 大概率直接拒绝。
             //
             // ⇒ 放在「录音段校验通过」这一刻 ——
             //   用户刚刚在手表上录了音，正是他要转写的时刻。
@@ -168,9 +168,9 @@ final class PhoneReceiverModel: ObservableObject {
     private static func reason(for status: SpeechAuthorizationStatus) -> String {
         switch status {
         case .notDetermined:
-            return "没有语音识别权限。请到「设置 › 隐私与安全性 › 语音识别」里允许 teacher 使用语音识别。"
+            return "没有语音识别权限。请到「设置 › 隐私与安全性 › 语音识别」里允许 DayEcho 使用语音识别。"
         case .denied:
-            return "没有语音识别权限。请到「设置 › 隐私与安全性 › 语音识别」里允许 teacher 使用语音识别。"
+            return "没有语音识别权限。请到「设置 › 隐私与安全性 › 语音识别」里允许 DayEcho 使用语音识别。"
         case .restricted:
             return "本设备的语音识别受系统限制，无法使用。"
         case .authorized:

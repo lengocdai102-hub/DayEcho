@@ -261,7 +261,7 @@ watch_target.build_configurations.each do |cfg|
   s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks'
   s['LD_RUNPATH_SEARCH_PATHS'] =
     '$(inherited) @executable_path/Frameworks @loader_path/Frameworks'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
   # ★ 现代 SwiftUI watch App 的必需标记键
   s['INFOPLIST_KEY_WKApplication'] = 'YES'
   # 依附式手表 App：反向绑定到宿主 iOS App
@@ -291,7 +291,7 @@ watch_target.build_configurations.each do |cfg|
   #
   # watchOS 的图标集叫 `WatchAppIcon.appiconset`（不是 iOS 的 `AppIcon`）。
   # 不设这个键 ⇒ actool 不会为 watch target 编译任何图标
-  # ⇒ 手表桌面上**根本没有图标**（用户报「Watch 上找不到 teacher」）。
+  # ⇒ 手表桌面上**根本没有图标**（用户报「Watch 上找不到 DayEcho」）。
   s['ASSETCATALOG_COMPILER_APPICON_NAME'] = 'WatchAppIcon'
   # 前台持续显示录音状态（用户能一眼看出在录音）
   # ★ watch app 的 framework rpath ★
@@ -439,7 +439,7 @@ if File.directory?(catalog_path)
 
   # ★ watch target 也要挂同一个 asset catalog ★
   #
-  # 2026-11-18 真机实锤：手表桌面上**找不到 teacher**（白图标/无图标）。
+  # 2026-11-18 真机实锤：手表桌面上**找不到 DayEcho**（白图标/无图标）。
   #
   # 根因：xcassets **只**加进了 `ios_target` 的 Resources phase，
   # `watch_target` 完全没有 asset catalog ⇒ actool 从未为 watch
@@ -492,12 +492,12 @@ ios_target.build_configurations.each do |cfg|
   # 结果产物里 rpath 不是你以为的那条。
   #
   # ★ 这里是 iOS App target（不是 watch）★
-  # watch app 也设了 CFBundleDisplayName = teacher，
+  # watch app 也设了 CFBundleDisplayName = DayEcho，
   # 按显示名去定位会改错地方 —— 必须按 target 块定位。
   s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks'
   s['LD_RUNPATH_SEARCH_PATHS'] =
     '$(inherited) @executable_path/Frameworks @loader_path/Frameworks'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
   s['INFOPLIST_KEY_UILaunchScreen_Generation'] = 'YES'
   s['INFOPLIST_KEY_UISupportedInterfaceOrientations'] = 'UIInterfaceOrientationPortrait'
   s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] =
@@ -712,7 +712,7 @@ watch_widget_target.build_configurations.each do |cfg|
   # ⇒ 只有提供真实 Info.plist 文件才可靠。
   s['GENERATE_INFOPLIST_FILE'] = 'NO'
   s['INFOPLIST_FILE'] = 'Sources/DayEchoWatchWidget/Info.plist'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
@@ -783,7 +783,7 @@ ios_widget_target.build_configurations.each do |cfg|
   # ⇒ 真机安装必报 IXErrorDomain Code=17 (extensionDictionary must be set)。
   s['GENERATE_INFOPLIST_FILE'] = 'NO'
   s['INFOPLIST_FILE'] = 'Sources/DayEchoWidget/Info.plist'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'teacher'
+  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
