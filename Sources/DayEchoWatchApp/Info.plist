@@ -58,7 +58,6 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
-		<string>processing</string>
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的手表上。</string>

@@ -53,6 +53,18 @@
 		          表现为「手机不在身边时手表录音传不过来」。
 		- `processing`：后台语音转写任务会被系统挂起。
 
+		★★ 为什么这里只有 `audio`、没有 `processing` ★★
+		（2026-11-19 修正）
+		- 全仓检索确认：源码**零使用** `BGTaskScheduler` / `BGProcessingTask` /
+		  `beginBackgroundTask` / 后台 `URLSession`。
+		- 转写走 Apple `SpeechTranscriber`，Apple 明确**不支持** App 退到后台后
+		  继续执行语音识别 ⇒ 声明 `processing` 对本项目毫无收益。
+		- 而 `processing` 属于「后台任务处理」模式，若要真正使用，Info.plist
+		  必须同时提供 `BGTaskSchedulerPermittedIdentifiers`（本项目没有）。
+		- 留着一条「声明了但永远不会触发、且缺配套 identifier」的后台模式，
+		  是审核问询点，也是 iOS 运行期会打警告的噪音。
+		⇒ 只保留真正在用的 `audio`（锁屏接收 Watch 录音，本项目硬需求）。
+
 		⇒ 唯一可靠的做法就是提供真实的 Info.plist 文件，
 		   在里面写真正的 <array>。
 		   （与 Sources/DayEchoWidget/Info.plist 同一套做法，
@@ -61,7 +73,6 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
-		<string>processing</string>
 	</array>
 	<!--
 		★★ NSSupportsLiveActivities ★★
