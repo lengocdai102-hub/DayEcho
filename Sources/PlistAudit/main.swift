@@ -42,6 +42,23 @@ enum PlistAudit {
         let watchBlock = assignments(blocks[2])
         let iosBlock = assignments(blocks[3])
 
+        // ★ 真源是显式 Info.plist 文件，不是 pbxproj ★
+        //
+        // 2026-11-19：两个 App target 改用 GENERATE_INFOPLIST_FILE = 'NO'
+        // （因为 INFOPLIST_KEY_UIBackgroundModes 在生成模式下会被 Xcode 整体丢弃）。
+        // 改用显式 plist 后，INFOPLIST_KEY_* 这一整套**完全不生效**（被 Xcode 忽略），
+        // 所以继续查 pbxproj 会得出「缺 NSMicrophoneUsageDescription / UIBackgroundModes /
+        // WKApplication」这类**完全错误**的结论。
+        // ⇒ 审计必须查 plist 文件本身。
+        guard let watchPlist = loadPlist(root + "/Sources/DayEchoWatchApp/Info.plist") else {
+            print("✗ 读不到 Sources/DayEchoWatchApp/Info.plist —— 审计器需要同步更新")
+            return 1
+        }
+        guard let iosPlist = loadPlist(root + "/Sources/DayEchoApp/Info.plist") else {
+            print("✗ 读不到 Sources/DayEchoApp/Info.plist —— 审计器需要同步更新")
+            return 1
+        }
+
         // ══════════════ 2. watch target 审计 ══════════════
         let watchSrc = readDir(root + "/Sources/DayEchoWatchApp")
         let watchImpl = watchSrc.joined(separator: "\n")
@@ -49,7 +66,7 @@ enum PlistAudit {
         // 2a. 麦克风
         let watchUsesMic = watchImpl.contains("AVAudioSession") || watchImpl.contains("AVAudioRecorder")
         if watchUsesMic {
-            if declares(watchBlock, "INFOPLIST_KEY_NSMicrophoneUsageDescription") {
+            if plistDeclares(watchPlist, "NSMicrophoneUsageDescription") {
                 print("✓ watch 端已声明 NSMicrophoneUsageDescription")
             } else {
                 failures.append("watch 端用了 AVAudioSession 但未声明 NSMicrophoneUsageDescription —— 真机上点开始录音会被系统静默拒绝")
@@ -57,35 +74,35 @@ enum PlistAudit {
         }
 
         // 2b. 后台音频 —— 全天录音的正解，缺了就锁屏断录
-        if declares(watchBlock, "INFOPLIST_KEY_UIBackgroundModes") && watchBlock.contains("'audio'") {
+        if plistDeclares(watchPlist, "UIBackgroundModes") && plistArrayContains(watchPlist, "UIBackgroundModes", "audio") {
             print("✓ watch 端已声明 UIBackgroundModes = audio（锁屏持续录音）")
         } else {
             failures.append("watch 端未声明 UIBackgroundModes = audio —— 锁屏/息屏后进程被挂起，录音出现空洞")
         }
 
         // 2c. WKApplication 必填
-        if declares(watchBlock, "INFOPLIST_KEY_WKApplication") {
+        if plistDeclares(watchPlist, "WKApplication") {
             print("✓ watch 端已声明 WKApplication")
         } else {
             failures.append("watch 端缺少 INFOPLIST_KEY_WKApplication —— SwiftUI watch App 无法启动")
         }
 
         // 2d. WKWatchOnly 必须不存在（与嵌入语义互斥）
-        if declares(watchBlock, "INFOPLIST_KEY_WKWatchOnly") {
+        if plistDeclares(watchPlist, "WKWatchOnly") {
             failures.append("watch 端设置了 WKWatchOnly=YES —— 与「嵌入 iOS App」语义互斥，会导致安装失败")
         } else {
             print("✓ watch 端未启用 WKWatchOnly（嵌入语义正确）")
         }
 
         // ══════════════ 3. iOS target 审计 ══════════════
-        if declares(iosBlock, "INFOPLIST_KEY_NSMicrophoneUsageDescription") {
+        if plistDeclares(iosPlist, "NSMicrophoneUsageDescription") {
             print("✓ iOS 端已声明 NSMicrophoneUsageDescription")
         } else {
             failures.append("iOS 端缺少 NSMicrophoneUsageDescription")
         }
 
         // 3a. iOS 端也要后台音频 —— 否则锁屏后手机停止接收手表传来的录音
-        if declares(iosBlock, "INFOPLIST_KEY_UIBackgroundModes") && iosBlock.contains("'audio'") {
+        if plistDeclares(iosPlist, "UIBackgroundModes") && plistArrayContains(iosPlist, "UIBackgroundModes", "audio") {
             print("✓ iOS 端已声明 UIBackgroundModes = audio（锁屏仍能接收手表录音）")
         } else {
             failures.append("iOS 端缺少 UIBackgroundModes = audio —— 锁屏后手机停止接收手表传来的录音")
@@ -96,7 +113,7 @@ enum PlistAudit {
             + readDir(root + "/Sources/DayEchoWatchApp")
             + readDir(root + "/Sources/DayEchoKit")
         let healthUsed = allSrc.contains { $0.contains("HKHealthStore") || $0.contains("import HealthKit") }
-        if declares(iosBlock, "NSHealthShareUsageDescription") {
+        if plistDeclares(iosPlist, "NSHealthShareUsageDescription") {
             if healthUsed {
                 warnings.append("iOS 端声明了 NSHealthShareUsageDescription 且确实用到 HealthKit —— 确认是否真有必要")
             } else {
@@ -109,7 +126,7 @@ enum PlistAudit {
         // 3c. 其他常见的无用权限
         for perm in ["NSLocationWhenInUseUsageDescription", "NSCameraUsageDescription",
                      "NSContactsUsageDescription", "NSPhotoLibraryUsageDescription"] {
-            if declares(iosBlock, perm) {
+            if plistDeclares(iosPlist, perm) {
                 let key = perm.replacingOccurrences(of: "UsageDescription", with: "")
                 let used = allSrc.contains { $0.contains(key) }
                 if !used {
@@ -244,11 +261,51 @@ enum PlistAudit {
                 } else {
                     print("✓ 生成后工程无冗余 HealthKit 权限")
                 }
-                // 3. 后台音频与麦克风必须真的在工程里
-                if generated.contains("UIBackgroundModes") && generated.contains("NSMicrophoneUsageDescription") {
-                    print("✓ 生成后工程含后台音频与麦克风声明")
+                // 3. ★ 后台音频与麦克风必须真的在产物里 ★
+                //
+                // ★ 这里必须查两处，缺一不可 ★
+                //
+                // (a) 工程必须**指向显式 Info.plist**
+                //     （GENERATE_INFOPLIST_FILE = NO + INFOPLIST_FILE = ...）
+                //     否则 Xcode 会用生成模式，而生成模式会**整体丢弃**
+                //     INFOPLIST_KEY_UIBackgroundModes ⇒ 产物里没这个键。
+                //
+                // (b) plist 文件本身必须真的有那些键
+                //
+                // ★ 为什么不能只查 pbxproj 文本 ★
+                // pbxproj 里那行 `INFOPLIST_KEY_UIBackgroundModes = ...` 照旧存在，
+                // 但产物里根本没有 —— 只看文本会得出**完全错误**的结论。
+                //
+                // ★ 必须成对校验 ★
+                // 只查 "INFOPLIST_FILE = ...;" 存在是不够的 ——
+                // 哪怕 INFOPLIST_FILE 还在，只要同一块里 GENERATE_INFOPLIST_FILE 变回 YES，
+                // Xcode 就会**忽略** INFOPLIST_FILE 并改用生成模式 ⇒ UIBackgroundModes 又没了。
+                // 所以每一处 INFOPLIST_FILE 的**紧邻上一行**必须是 GENERATE_INFOPLIST_FILE = NO。
+                for (plistRef, label) in [("INFOPLIST_FILE = Sources/DayEchoApp/Info.plist;", "iOS 主 App"),
+                                          ("INFOPLIST_FILE = Sources/DayEchoWatchApp/Info.plist;", "Watch App")] {
+                    if !generated.contains(plistRef) {
+                        failures.append("生成后的工程没有让 \(label) 指向显式 Info.plist（\(plistRef)）")
+                        continue
+                    }
+                    let genLines = generated.components(separatedBy: "\n")
+                    var refs = 0
+                    var badPairs = 0
+                    for (i, line) in genLines.enumerated() where line.contains(plistRef) {
+                        refs += 1
+                        let prev = i > 0 ? genLines[i - 1].trimmingCharacters(in: .whitespaces) : ""
+                        if !prev.contains("GENERATE_INFOPLIST_FILE = NO") { badPairs += 1 }
+                    }
+                    if badPairs > 0 {
+                        failures.append("生成后的工程里 \(label) 有 \(badPairs)/\(refs) 处 INFOPLIST_FILE 没配 GENERATE_INFOPLIST_FILE = NO —— 生成模式会丢弃 UIBackgroundModes")
+                    } else {
+                        print("✓ 生成后工程 \(label) 的 \(refs) 处 INFOPLIST_FILE 均配 GENERATE_INFOPLIST_FILE = NO")
+                    }
+                }
+                if plistDeclares(iosPlist, "UIBackgroundModes") && plistDeclares(iosPlist, "NSMicrophoneUsageDescription")
+                    && plistDeclares(watchPlist, "UIBackgroundModes") && plistDeclares(watchPlist, "NSMicrophoneUsageDescription") {
+                    print("✓ 显式 Info.plist 含后台音频与麦克风声明")
                 } else {
-                    failures.append("生成后的工程缺少 UIBackgroundModes 或 NSMicrophoneUsageDescription")
+                    failures.append("显式 Info.plist 缺少 UIBackgroundModes 或 NSMicrophoneUsageDescription")
                 }
                 // 4. 新增源文件必须真的进了工程
                 for need in ["WatchTransferChannel.swift", "WatchSessionCoordinator.swift",
@@ -333,6 +390,35 @@ enum PlistAudit {
     }
 
     // MARK: 工具
+
+    /// 读取一个 XML plist 文件，返回顶层字典。
+    ///
+    /// ★ 用 PropertyListSerialization 而不是 plutil 命令行 ★
+    /// 一是 macOS/Linux 都能跑（CI 在 Linux 上），
+    /// 二是解析失败会明确抛错，不会像 `plutil -lint` 那样对
+    /// XML 注释里的 `--` 放行（那是 plistlib 才拒绝的非法 XML）。
+    static func loadPlist(_ path: String) -> [String: Any]? {
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        guard let obj = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let dict = obj as? [String: Any]
+        else { return nil }
+        return dict
+    }
+
+    /// 判断显式 Info.plist 里是否声明了某个键。
+    static func plistDeclares(_ plist: [String: Any], _ key: String) -> Bool {
+        return plist[key] != nil
+    }
+
+    /// 判断 plist 里某个数组键是否包含指定字符串。
+    ///
+    /// ★ 必须查数组的真实内容，不能查 pbxproj 文本 ★
+    /// `INFOPLIST_KEY_UIBackgroundModes` 在生成模式下会被 Xcode 整体丢弃，
+    /// 而 pbxproj 里那行文本**照旧存在** —— 只看文本会得出完全错误的结论。
+    static func plistArrayContains(_ plist: [String: Any], _ key: String, _ value: String) -> Bool {
+        guard let arr = plist[key] as? [Any] else { return false }
+        return arr.contains { ($0 as? String) == value }
+    }
 
     /// 剔除注释行，只保留 `s['KEY'] = ...` / `s.delete('KEY')` 形态的赋值语句。
     static func assignments(_ text: String) -> String {
