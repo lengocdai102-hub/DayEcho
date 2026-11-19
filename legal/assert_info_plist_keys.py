@@ -56,6 +56,13 @@ REQUIRED = {
         # BUNDLE_ID 是 gen_xcodeproj.rb 的 Ruby 局部变量，不是 build setting，
         # Xcode 不会替换它 ⇒ 产物里会留下 "$(BUNDLE_ID)" ⇒ companion 指针失效
         # ⇒ 手表端装不上 / 认不出手机上的 app。
+        # ★ WKCompanionAppBundleIdentifier 必须等于**宿主主 App 的 CFBundleIdentifier** ★
+        #   2026-11-19 实测：写成不带 Team ID 的 com.dayecho.app 时，
+        #   模拟器直接拒绝安装：
+        #     "Invalid value of WKCompanionAppBundleIdentifier key in WatchKit 2.0
+        #      app's Info.plist: com.dayecho.app.H98V6YZ5QL (expected com.dayecho.app)"
+        #   ⇒ 这不是"期望不带后缀"，而是当时的宿主 Bundle ID 恰好是不带后缀的。
+        #   ⇒ 现在主 App Bundle ID 由 gen_xcodeproj.rb 从 TEAM_ID 派生 ⇒ 带后缀。
         "WKCompanionAppBundleIdentifier": "com.dayecho.app.H98V6YZ5QL",
         "WKRunsIndependentlyOfCompanionApp": False,
         "NSMicrophoneUsageDescription": None,

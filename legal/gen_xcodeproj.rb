@@ -46,8 +46,25 @@ IOS_MIN = '17.0'
 # watch App 内的界面入口不依赖 Control Widget，
 # 老系统用户仍可从 App 内启动抓拍（只是多一步）。
 WATCH_MIN = '26.0'
-BUNDLE_ID = 'com.dayecho.app'
-WATCH_BUNDLE_ID = 'com.dayecho.app.watchkitapp'
+# ★ Bundle ID 必须与 Apple 实际签发的 App ID 完全一致 ★
+#
+# ★ 2026-11-19 的教训（血泪）★
+# Apple 签发的 Team Provisioning Profile 里是：
+#   com.dayecho.app.H98V6YZ5QL          (主 App)
+#   com.dayecho.app.H98V6YZ5QL.widget   (iOS Widget)
+# 而这里原本写的是 'com.dayecho.app'（不带 Team ID 后缀）
+# ⇒ 真机上 profile 与 Bundle ID 不匹配 ⇒ 装不上
+# ⇒ 当时为了绕过签名手工改了 project.pbxproj，但**生成器没改**
+# ⇒ CI 每次重新生成工程都退回错的 ⇒ CI 与本地行为不一致
+# ⇒ 并且 WKCompanionAppBundleIdentifier 跟着一起被改错
+# ⇒ 模拟器直接拒绝安装：
+#    "Invalid value of WKCompanionAppBundleIdentifier key in WatchKit 2.0
+#     app's Info.plist: com.dayecho.app.H98V6YZ5QL (expected com.dayecho.app)"
+#
+# ⇒ 现在所有 Bundle ID 一律从 TEAM_ID 派生，杜绝手改后遗漏。
+TEAM_ID = ENV['DAYECHO_TEAM_ID'] || 'H98V6YZ5QL'
+BUNDLE_ID = "com.dayecho.app.#{TEAM_ID}"
+WATCH_BUNDLE_ID = "#{BUNDLE_ID}.watchkitapp"
 
 # ============================================================
 # App Group（跨进程共享容器）—— 默认**关闭**，按需开启
@@ -76,7 +93,11 @@ WATCH_BUNDLE_ID = 'com.dayecho.app.watchkitapp'
 # 目录结构、文件名、写入方式在两条路径下完全一致，
 # 唯一差别只有落盘位置。测试覆盖的就是这一层。
 USE_APP_GROUP = ENV['DAYECHO_APP_GROUP'] == '1'
-APP_GROUP_ID = 'group.com.dayecho.shared'
+# ★ App Group（entitlement）与 Bundle ID 是两回事 ★
+# App Group 是 'group.' 前缀，值里带 Team ID；Bundle ID 不带 'group.' 前缀。
+# ★ 2026-11-19 的教训 ★ 我曾把 App Group 的值误填进
+#   WKCompanionAppBundleIdentifier ⇒ 系统拒绝安装。
+APP_GROUP_ID = "group.com.dayecho.app.#{TEAM_ID}"
 
 
 # ============================================================
@@ -90,7 +111,7 @@ ios_target = project.new_target(:application, 'DayEcho', :ios, IOS_MIN)
 kit_target = project.new_target(:framework, 'DayEchoKit', :ios, IOS_MIN)
 kit_target.build_configurations.each do |cfg|
   s = cfg.build_settings
-  s['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.dayecho.kit'
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = "com.dayecho.kit.#{TEAM_ID}"
   s['PRODUCT_NAME'] = 'DayEchoKit'
   s['MARKETING_VERSION'] = '1.0.0'
   s['CURRENT_PROJECT_VERSION'] = '1'
@@ -169,7 +190,7 @@ end
 watch_kit_target = project.new_target(:framework, 'DayEchoKitWatch', :watchos, WATCH_MIN)
 watch_kit_target.build_configurations.each do |cfg|
   s = cfg.build_settings
-  s['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.dayecho.kit.watch'
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = "com.dayecho.kit.watch.#{TEAM_ID}"
   s['PRODUCT_NAME'] = 'DayEchoKit'
   s['MARKETING_VERSION'] = '1.0.0'
   s['CURRENT_PROJECT_VERSION'] = '1'
@@ -598,7 +619,7 @@ end
 intents_target = project.new_target(:framework, 'DayEchoIntents', :watchos, WATCH_MIN)
 intents_target.build_configurations.each do |cfg|
   s = cfg.build_settings
-  s['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.dayecho.intents'
+  s['PRODUCT_BUNDLE_IDENTIFIER'] = "com.dayecho.intents.#{TEAM_ID}"
   s['PRODUCT_NAME'] = 'DayEchoIntents'
   s['MARKETING_VERSION'] = '1.0.0'
   s['CURRENT_PROJECT_VERSION'] = '1'
