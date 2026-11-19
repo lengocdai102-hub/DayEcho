@@ -164,11 +164,29 @@ def main() -> None:
     info(f"✓ 已获取设备锁: {args.device}")
 
     # ---- 1. 模拟器必须可用 ----
-    rc, out, err = sh("xcrun simctl list devices")
+    # ★ 为什么要重试 ★
+    # CI runner 上加载完 watchOS runtime 后，CoreSimulator 要枚举所有设备，
+    # `simctl list devices` 偶尔会**挂住超过 60 秒**（实测 run 44599744332：
+    #   workflow 里的 `simctl list devices available` 秒回，
+    #   而脚本里的 `simctl list devices` 60s 超时）。
+    # ⇒ 重试 3 次，每次 180s；「available」比全量枚举快，优先用它。
+    rc, out, err = 1, "", ""
+    for attempt in range(1, 4):
+        rc, out, err = sh("xcrun simctl list devices available", timeout=180)
+        if rc == 0 and out.strip():
+            break
+        info(f"::notice::第 {attempt}/3 次枚举模拟器失败（rc={rc}），重试")
+        time.sleep(10)
+    if rc != 0:
+        # 退一步用全量枚举再试一次（available 在某些 runtime 上可能为空）
+        rc, out, err = sh("xcrun simctl list devices", timeout=180)
     if rc != 0:
         fail("simctl 无法工作，CoreSimulator 服务异常", err)
     if args.device not in out:
-        fail(f"找不到模拟器 {args.device}，请检查 runtime 是否安装")
+        fail(
+            f"找不到模拟器 {args.device}，请检查 runtime 是否安装",
+            out[:2000],
+        )
 
     # ---- 2. boot ----
     sh(f'xcrun simctl boot "{args.device}" 2>&1')
@@ -215,7 +233,21 @@ def main() -> None:
         info("✓ 未声明 WKWatchOnly（依附式正确）")
 
     # ---- 3. 安装 ----
-    rc, out, err = sh(f'xcrun simctl install "{args.device}" "{app}" 2>&1', timeout=180)
+    # ★ install 同样会挂死 ⇒ 重试 ★
+    # 实测：CI 上曾出现 install rc=124（180s 超时），
+    # 而同一台机器稍后的 install 又秒成。⇒ runner 侧 simctl 会间歇性卡住。
+    rc, out, err = 1, "", ""
+    for attempt in range(1, 4):
+        rc, out, err = sh(
+            f'xcrun simctl install "{args.device}" "{app}" 2>&1', timeout=180
+        )
+        if rc == 0:
+            if attempt > 1:
+                info(f"✓ 安装成功（第 {attempt} 次尝试，前几次 runner 挂死）")
+            break
+        info(f"::notice::第 {attempt}/3 次安装失败（rc={rc}），重试")
+        sh(f'pkill -f "simctl install.*{os.path.basename(app)}" 2>/dev/null || true')
+        time.sleep(8)
     if rc != 0:
         # ★ 安装失败同样必须给证据，否则只能靠猜 ★
         print("--- 安装失败诊断 ---", flush=True)

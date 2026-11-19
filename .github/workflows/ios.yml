@@ -547,10 +547,20 @@ jobs:
             exit 0
           fi
 
-          WATCH_NAME="$(xcrun simctl list devices available 2>/dev/null \
-            | grep -A5 "watchOS" \
-            | grep -oE "Apple Watch Series [0-9]+ \([0-9]+mm\)" \
-            | head -1)"
+          # ★ 枚举 watch 设备要重试 ★
+          # 实测 run 44599744332：这里第一次就拿到了设备名，
+          # 但**紧接着**脚本里的 `simctl list devices` 60s 超时
+          # ⇒ 加载 watchOS runtime 后 CoreSimulator 正忙于枚举全量设备。
+          WATCH_NAME=""
+          for attempt in 1 2 3; do
+            WATCH_NAME="$(xcrun simctl list devices available 2>/dev/null \
+              | grep -A5 "watchOS" \
+              | grep -oE "Apple Watch Series [0-9]+ \([0-9]+mm\)" \
+              | head -1)"
+            if [ -n "$WATCH_NAME" ]; then break; fi
+            echo "::notice::第 $attempt/3 次未取到 watch 设备名，重试"
+            sleep 10
+          done
           if [ -z "$WATCH_NAME" ]; then
             echo "::error::找不到可用的 watchOS 模拟器设备"
             exit 1
