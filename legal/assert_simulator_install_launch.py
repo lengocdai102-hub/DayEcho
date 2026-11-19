@@ -34,6 +34,8 @@ extension（Widget / Watch Widget）是独立进程，宿主起来了不代表�
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import json
 import os
 import shutil
@@ -82,6 +84,49 @@ def wait_for_boot(device: str, timeout: int = 180) -> bool:
     return False
 
 
+def acquire_device_lock(device: str, timeout: int = 900):
+    """★ 设备级互斥锁 ★
+
+    为什么必须有
+    ----------
+    `xcrun simctl install/launch` 对同一台设备是**串行**的：
+    第二个 simctl 进程会一直等锁，等到超时，看起来就像「install 卡死」。
+
+    ★ 实测踩坑（2026-11-19 本机）★
+    本机同时跑了 5 个 `simctl install`（其中 2 个是我自己并发开的门禁），
+    结果**全部卡死**，一度误判成「App Group entitlements 导致 install 挂死」。
+    ⇒ 结论：卡死时先看有没有别的 simctl 进程，而不是先怀疑产物。
+
+    ⇒ 门禁必须自带锁，否则 CI 上并发 job 会以同样的方式死锁。
+    """
+    lock_dir = os.path.join(
+        os.path.expanduser("~"), ".cache", "dayecho-simulator-locks"
+    )
+    os.makedirs(lock_dir, exist_ok=True)
+    safe = device.replace("/", "_").replace(" ", "_")
+    lock_path = os.path.join(lock_dir, f"{safe}.lock")
+
+    fh = open(lock_path, "w")
+    fh.write(str(os.getpid()))
+    fh.flush()
+
+    deadline = time.time() + timeout
+    while True:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except OSError as e:
+            if e.errno not in (errno.EACCES, errno.EAGAIN):
+                raise
+            if time.time() >= deadline:
+                fh.close()
+                fail(
+                    f"等待设备锁超时（{timeout}s）：{lock_path} —— "
+                    f"已有另一个 simctl 在占用该设备"
+                )
+            time.sleep(2)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--app", required=True, help="DayEcho.app 路径")
@@ -95,6 +140,10 @@ def main() -> None:
         fail(f"App 产物不存在: {app}")
     if not os.path.exists(os.path.join(app, "Info.plist")):
         fail(f"App 产物缺少 Info.plist: {app}")
+
+    # ---- 0. 设备级互斥锁（防并发 simctl 互相锁死）----
+    lock_fh = acquire_device_lock(args.device)
+    info(f"✓ 已获取设备锁: {args.device}")
 
     # ---- 1. 模拟器必须可用 ----
     rc, out, err = sh("xcrun simctl list devices")
@@ -112,6 +161,18 @@ def main() -> None:
     # ---- 3. 安装 ----
     rc, out, err = sh(f'xcrun simctl install "{args.device}" "{app}" 2>&1', timeout=180)
     if rc != 0:
+        # ★ 安装失败同样必须给证据，否则只能靠猜 ★
+        print("--- 安装失败诊断 ---", flush=True)
+        rc2, out2, _ = sh(
+            f'xcrun simctl list devices 2>&1 | grep -A1 -i "iOS" | head -20'
+        )
+        print(f"[设备状态]\n{out2.strip()}", flush=True)
+        pred = 'process CONTAINS "installd" OR process CONTAINS "lsd"'
+        rc3, out3, _ = sh(
+            'xcrun simctl spawn "' + args.device + '" log show --last 3m '
+            '--predicate "' + pred + '" 2>/dev/null | tail -25'
+        )
+        print(f"[安装器日志尾部]\n{out3.strip() or '(无)'}", flush=True)
         fail(f"安装失败（rc={rc}）", out + err)
     info(f"✓ 安装成功: {args.bundle_id}")
 

@@ -416,13 +416,26 @@ jobs:
           rm -rf "$RUNNER_TEMP"/DerivedData*
           df -h "$RUNNER_TEMP" | tail -1
 
+          # ★ 用 ad-hoc 签名而不是 CODE_SIGNING_ALLOWED=NO（2026-11-19）★
+          #
+          # ★ 为什么 ★
+          # CODE_SIGNING_ALLOWED=NO 时，**entitlements 根本不进产物**
+          # （实测：binary 的 SHA256 与带 entitlements 时完全一致，
+          #   codesign -d 报 "code object is not signed at all"）。
+          # ⇒ 模拟器上 App Group 共享容器那条路，CI 里等于从没被验过。
+          #
+          # ⇒ 改用 ad-hoc 签名（CODE_SIGN_IDENTITY="-"）：
+          #   模拟器不需要 provisioning profile，ad-hoc 足够，
+          #   但 entitlements 会真正嵌入产物 ⇒ CI 验的和真机是同一件事。
           xcodebuild \
             -project DayEcho.xcodeproj \
             -scheme DayEcho \
             -destination 'generic/platform=iOS Simulator' \
             -configuration Debug \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=YES \
             COMPILER_INDEX_STORE_ENABLE=NO \
             build
 
