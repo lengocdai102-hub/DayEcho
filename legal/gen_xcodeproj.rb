@@ -92,7 +92,18 @@ WATCH_BUNDLE_ID = "#{BUNDLE_ID}.watchkitapp"
 # ★ 回退路径不是降级，是正常路径 ★
 # 目录结构、文件名、写入方式在两条路径下完全一致，
 # 唯一差别只有落盘位置。测试覆盖的就是这一层。
-USE_APP_GROUP = ENV['DAYECHO_APP_GROUP'] == '1'
+# ★ 2026-11-19 修正 ★ 默认改为**开启**。
+#
+# 原注释的理由是"免费 Personal Team 签名时带 app-group 会失败"——
+# 但本项目现在用的是**付费 Team（H98V6YZ5QL）**，
+# Apple 实际签发的 profile 里就含 App Group
+# （group.com.dayecho.app.H98V6YZ5QL），
+# entitlements 与 profile 不一致 ⇒ 真机签名/安装直接失败。
+#
+# ⇒ 模拟器构建也必须挂上 entitlements，
+#   否则 CI 验的产物与真机产物根本不是同一个东西。
+# ⇒ 保留 DAYECHO_APP_GROUP=0 作为显式关闭开关（仅供无 App Group 的场景调试）。
+USE_APP_GROUP = ENV['DAYECHO_APP_GROUP'] != '0'
 # ★ App Group（entitlement）与 Bundle ID 是两回事 ★
 # App Group 是 'group.' 前缀，值里带 Team ID；Bundle ID 不带 'group.' 前缀。
 # ★ 2026-11-19 的教训 ★ 我曾把 App Group 的值误填进
