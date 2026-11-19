@@ -75,6 +75,78 @@ def sh(cmd: str, timeout: int = 120) -> tuple[int, str, str]:
 # ---------------------------------------------------------------- entitlements
 
 
+# ★ 显式传入的 .xcent 路径（命令行 --xcent）★
+EXPLICIT_XCENTS: list[str] = []
+
+
+def xcent_candidates(bundle_path: str) -> list[str]:
+    """返回可能要读的 .xcent 文件路径（按优先级）。
+
+    ★ 为什么需要这个 ★
+    entitlements 有三种存放形态，构建工具/版本不同放的地方也不同：
+      1. Mach-O 的 __TEXT __entitlements 段        （Xcode 26.2 模拟器）
+      2. 代码签名槽里的 DER                          （Xcode 26.3 模拟器）
+      3. Build/Intermediates.noindex 下的 .xcent    （最稳，两版本都有）
+
+    .xcent 又分两个：
+      xxx.app.xcent            → 设备用，空 dict
+      xxx.app-Simulated.xcent   → 模拟器用，才有 App Group
+    ⇒ 优先 Simulated 那个。
+
+    ★ 找不到时的兜底 ★
+    从 bundle 路径反推 DerivedData 根，再按 target 名去 Intermediates 里找。
+    """
+    out: list[str] = []
+
+    # 1) 显式传入的（最可靠）
+    for p in EXPLICIT_XCENTS:
+        if os.path.isfile(p):
+            out.append(p)
+
+    # 2) 从 bundle 路径反推 Intermediates 目录
+    #    .../Build/Products/Debug-iphonesimulator/DayEcho.app
+    #      → .../Build/Intermediates.noindex/DayEcho.build/Debug-iphonesimulator/<Target>.build/
+    b = os.path.abspath(bundle_path)
+    parts = b.split(os.sep)
+    if "Products" in parts:
+        i = parts.index("Products")
+        build_root = os.sep.join(parts[:i])          # .../Build
+        # ★ cfg 目录是 Products 的**下一层**（Debug-iphonesimulator）★
+        #   取 parts[:i+1] 的 basename 会拿到 "Products" 自己 —— 踩过。
+        cfg_dir = parts[i + 1] if len(parts) > i + 1 else ""
+        # target 名 = bundle 名去掉 .app/.appex
+        target = os.path.basename(b)
+        for suf in (".appex", ".app"):
+            if target.endswith(suf):
+                target = target[: -len(suf)]
+                break
+        # ★ 项目名 = Intermediates.noindex 下的 <proj>.build 目录名 ★
+        #   不能用 products 子目录名（那是 Debug-iphonesimulator）——
+        #   实测踩过：拼出来是 "Debug-iphonesimulator.build" ⇒ 永远找不到。
+        ind = os.path.join(build_root, "Intermediates.noindex")
+        proj_dirs = []
+        if os.path.isdir(ind):
+            proj_dirs = [d for d in os.listdir(ind) if d.endswith(".build")]
+        # 优先匹配 target 属于的那个项目（项目名通常和 target 同源）
+        proj_dirs.sort(key=lambda x: 0 if x.startswith(target.split(".")[0]) else 1)
+        for pd in proj_dirs or [f"{target}.build"]:
+            tdir = os.path.join(ind, pd, cfg_dir, f"{target}.build")
+            for name in (f"{target}.app-Simulated.xcent", f"{target}.appex-Simulated.xcent",
+                         f"{target}.app.xcent", f"{target}.appex.xcent",
+                         f"{target}-Simulated.xcent"):
+                cand = os.path.join(tdir, name)
+                if os.path.isfile(cand):
+                    out.append(cand)
+    # 去重保序
+    seen = set()
+    res = []
+    for p in out:
+        if p not in seen:
+            seen.add(p)
+            res.append(p)
+    return res
+
+
 def read_entitlements(bundle_path: str) -> tuple[dict | None, str]:
     """从**签名信息**里读 entitlements（不是读源码）。
 
@@ -101,18 +173,24 @@ def read_entitlements(bundle_path: str) -> tuple[dict | None, str]:
     #   而 codesign 读出来是空的 → 必须继续往下走 otool 分支。
     #   （踩过：这里提前 return ⇒ 永远读不到真正的 entitlement）
 
-    # 2) 退一步：读 .xcent（模拟器上 codesign 可能不可用）
-    for root, _dirs, files in os.walk(bundle_path):
-        for f in files:
-            if f.endswith(".xcent"):
-                p = os.path.join(root, f)
-                try:
-                    with open(p, "rb") as fh:
-                        data = plistlib.load(fh)
-                    if data:
-                        return data, f"xcent:{os.path.relpath(p, bundle_path)}"
-                except Exception:
-                    continue
+    # 2) 退一步：读 .xcent
+    #
+    # ★ 关键区别（踩过）★
+    #   构建会生成**两个** .xcent：
+    #     <name>.app.xcent            → 设备用的，空 dict
+    #     <name>.app-Simulated.xcent   → 模拟器用的，**才有 App Group**
+    #   只看「有 .xcent 就读」会读到空的那个 ⇒ 误判为「没有 entitlement」。
+    #
+    #   .xcent 在 Build/Intermediates.noindex 里，**不在 .app 包内**
+    #   ⇒ os.walk(bundle_path) 永远找不到。必须由调用方显式传入。
+    for cand in xcent_candidates(bundle_path):
+        try:
+            with open(cand, "rb") as fh:
+                data = plistlib.load(fh)
+            if data:
+                return data, f"xcent:{os.path.basename(cand)}"
+        except Exception:
+            continue
 
     # 3) 再退一步：watchOS 模拟器用 -sectcreate __TEXT __entitlements
     #    把 entitlements 链进了二进制 ⇒ 用 otool 挖
@@ -195,7 +273,18 @@ def main() -> int:
         help="type:path，type ∈ app|widget|watch",
     )
     ap.add_argument("--group-id", default=EXPECTED_GROUP)
+    ap.add_argument(
+        "--xcent",
+        action="append",
+        default=[],
+        help="★ 显式指定 .xcent 文件（可多次）★ "
+             "entitlements 在 Xcode 26.3 模拟器产物里既不在 __TEXT 段也不在包内，"
+             "只有 Build/Intermediates.noindex 下的 -Simulated.xcent 稳定可读",
+    )
     args = ap.parse_args()
+
+    global EXPLICIT_XCENTS
+    EXPLICIT_XCENTS = list(args.xcent)
 
     print("=== App Group 共享容器断言 ===")
     print(f"设备: {args.device}")
