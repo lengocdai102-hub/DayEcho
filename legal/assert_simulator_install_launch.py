@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 import shutil
+import glob as globmod
 import subprocess
 import sys
 import time
@@ -188,7 +189,7 @@ def collect_crash_reports(device: str, bundle_id: str) -> str:
     chunks = []
     # 宿主机侧：模拟器崩溃会落到这里
     for pat in (f"{bundle_id}*.ips", f"{bundle_id}*.crash"):
-        hits = shutil.glob(os.path.join(base, pat))
+        hits = globmod.glob(os.path.join(base, pat))
         for h in hits:
             try:
                 chunks.append(open(h, errors="replace").read()[:4000])
