@@ -9,7 +9,7 @@
   同一份共享目录（录音段 / 转写结果 / 扩展投递的文本载荷）。
 
   共享容器路径由系统分配，形如：
-    ~/Library/Group Containers/<UUID>/group.com.dayecho.shared/
+    ~/Library/Group Containers/<UUID>/group.com.dayecho.app.H98V6YZ5QL/
   其中 <UUID> 因设备、因账号而异 ⇒ 运行时必须用
   FileManager.containerURL(forSecurityApplicationGroupIdentifier:)
   解析，不能硬编码。
@@ -33,7 +33,7 @@
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.dayecho.shared</string>
+		<string>group.com.dayecho.app.H98V6YZ5QL</string>
 	</array>
 </dict>
 </plist>

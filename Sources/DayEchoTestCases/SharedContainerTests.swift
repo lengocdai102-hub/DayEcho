@@ -29,7 +29,7 @@ public enum SharedContainerTests {
             try Suite.equal(SharedContainer.recordingsDirectory, "Recordings")
             try Suite.equal(SharedContainer.transcriptsDirectory, "Transcripts")
             try Suite.equal(SharedContainer.quarantineDirectory, "Quarantine")
-            try Suite.equal(SharedContainer.appGroupIdentifier, "group.com.dayecho.shared")
+            try Suite.equal(SharedContainer.appGroupIdentifier, "group.com.dayecho.app.H98V6YZ5QL")
         }
 
         Suite.case_("目录：子目录路径挂在共享根目录下") {

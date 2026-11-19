@@ -19,7 +19,7 @@ import Foundation
 ///
 /// # 目录解析策略
 ///
-/// 1. **优先**：App Group container（`group.com.dayecho.shared`）
+/// 1. **优先**：App Group container（`group.com.dayecho.app.H98V6YZ5QL`）
 ///    —— 真机上 iOS App 与 Share Extension 共享同一份文件。
 /// 2. **回退**：主 App 的 `Documents/`（或测试注入的路径）
 ///    —— 模拟器、unsigned 构建、以及**所有单测**都走这条。
@@ -41,7 +41,7 @@ public enum SharedContainer {
     /// App Group 标识符
     ///
     /// ★ 与 `legal/gen_xcodeproj.rb` 中的 entitlements 保持一致 ★
-    public static let appGroupIdentifier = "group.com.dayecho.shared"
+    public static let appGroupIdentifier = "group.com.dayecho.app.H98V6YZ5QL"
 
     /// 共享目录名（各子目录的父目录）
     public static let sharedDirectoryName = "DayEchoShared"

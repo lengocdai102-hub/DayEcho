@@ -339,7 +339,7 @@ enum PlistAudit {
         print("")
         print("── App Group 一致性 ──")
         let kitSourcesForGroup = readDir(root + "/Sources/DayEchoKit").joined(separator: "\n")
-        let expectedGroup = "group.com.dayecho.shared"
+        let expectedGroup = "group.com.dayecho.app.H98V6YZ5QL"
 
         // 3.1 Swift 常量
         if kitSourcesForGroup.contains("\(expectedGroup)") {
