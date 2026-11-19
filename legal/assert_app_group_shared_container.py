@@ -98,10 +98,21 @@ def xcent_candidates(bundle_path: str) -> list[str]:
     """
     out: list[str] = []
 
+    # 当前 bundle 的 target 名
+    my_target = target_name_of(bundle_path)
+
     # 1) 显式传入的（最可靠）
+    # ★ 必须按 target 过滤 ★
+    #   --xcent 是全局列表，若不区分，**所有 target 都会读到同一个文件**
+    #   ⇒ app 的 entitlement 被当成 widget 的 ⇒ 断言变假阳性（真踩过：
+    #     CI 日志里 "[widget] 来源: xcent:DayEcho.app-Simulated.xcent"）。
     for p in EXPLICIT_XCENTS:
-        if os.path.isfile(p):
-            out.append(p)
+        if not os.path.isfile(p):
+            continue
+        t = target_name_of(p)
+        if t and my_target and t != my_target:
+            continue
+        out.append(p)
 
     # 2) 从 bundle 路径反推 Intermediates 目录
     #    .../Build/Products/Debug-iphonesimulator/DayEcho.app
@@ -115,11 +126,7 @@ def xcent_candidates(bundle_path: str) -> list[str]:
         #   取 parts[:i+1] 的 basename 会拿到 "Products" 自己 —— 踩过。
         cfg_dir = parts[i + 1] if len(parts) > i + 1 else ""
         # target 名 = bundle 名去掉 .app/.appex
-        target = os.path.basename(b)
-        for suf in (".appex", ".app"):
-            if target.endswith(suf):
-                target = target[: -len(suf)]
-                break
+        target = target_name_of(b)
         # ★ 项目名 = Intermediates.noindex 下的 <proj>.build 目录名 ★
         #   不能用 products 子目录名（那是 Debug-iphonesimulator）——
         #   实测踩过：拼出来是 "Debug-iphonesimulator.build" ⇒ 永远找不到。
@@ -145,6 +152,26 @@ def xcent_candidates(bundle_path: str) -> list[str]:
             seen.add(p)
             res.append(p)
     return res
+
+
+def target_name_of(path: str) -> str:
+    """从 bundle 路径或 .xcent 文件名推导 target 名。
+
+    - .../DayEcho.app                → DayEcho
+    - .../DayEchoWidget.appex        → DayEchoWidget
+    - .../DayEcho.app-Simulated.xcent → DayEcho
+    - .../DayEchoWidget.appex-Simulated.xcent → DayEchoWidget
+    """
+    base = os.path.basename(path.rstrip("/"))
+    for suf in ("-Simulated.xcent", ".xcent"):
+        if base.endswith(suf):
+            base = base[: -len(suf)]
+            break
+    for suf in (".appex", ".app", ".framework", ".xctest"):
+        if base.endswith(suf):
+            base = base[: -len(suf)]
+            break
+    return base
 
 
 def bundle_id_of(bundle_path: str) -> str:
@@ -200,7 +227,7 @@ def read_entitlements(bundle_path: str) -> tuple[dict | None, str]:
             with open(cand, "rb") as fh:
                 data = plistlib.load(fh)
             if data:
-                return data, f"xcent:{os.path.basename(cand)}"
+                return data, f"xcent:{cand}"
         except Exception:
             continue
 
@@ -325,6 +352,17 @@ def main() -> int:
             bad(f"    entitlements keys = {sorted(ent.keys())}")
             failed = True
             continue
+        # ★ 交叉校验：读到的 entitlements 必须**确实属于这个 target** ★
+        #   防止「所有 target 都读到同一份 xcent」造成的假阳性。
+        #   （真踩过：CI 日志显示 "[widget] 来源: xcent:DayEcho.app-Simulated.xcent"）
+        if how.startswith("xcent:"):
+            src_target = target_name_of(how.split(":", 1)[1])
+            my_target = target_name_of(path)
+            if src_target and my_target and src_target != my_target:
+                bad(f"[{ttype}] 读到了**别的 target** 的 entitlements（假阳性）")
+                bad(f"    期望 target: {my_target}，实读: {src_target}（{how}）")
+                failed = True
+                continue
         if args.group_id not in gs:
             bad(f"[{ttype}] App Group 不匹配：期望 {args.group_id}，实得 {sorted(gs)}")
             failed = True
