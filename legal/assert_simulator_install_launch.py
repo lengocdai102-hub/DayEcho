@@ -133,9 +133,26 @@ def main() -> None:
 
     # ---- 5. 启动 ----
     rc, out, err = sh(
-        f'xcrun simctl launch "{args.device}" {args.bundle_id} 2>&1', timeout=120
+        f'xcrun simctl launch "{args.device}" {args.bundle_id} 2>&1', timeout=300
     )
     if rc != 0:
+        # ★ 失败时必须把证据打出来，否则只能靠猜 ★
+        print("--- 启动失败诊断 ---", flush=True)
+        rc2, out2, err2 = sh(
+            f'xcrun simctl spawn "{args.device}" launchctl list 2>/dev/null '
+            f'| grep -i dayecho || true'
+        )
+        print(f"[进程列表] {out2.strip() or '(无 DayEcho 进程)'}", flush=True)
+        rc3, out3, _ = sh(
+            'find "$HOME/Library/Logs/DiagnosticReports" -iname "*DayEcho*" '
+            '-newermt "-10 minutes" -type f 2>/dev/null | head -5'
+        )
+        print(f"[崩溃报告] {out3.strip() or '(无)'}", flush=True)
+        rc4, out4, _ = sh(
+            f'xcrun simctl spawn "{args.device}" log show --last 2m '
+            f'--predicate \'process CONTAINS "DayEcho"\' 2>/dev/null | tail -30'
+        )
+        print(f"[设备日志尾部]\n{out4.strip() or '(无)'}", flush=True)
         fail(f"启动失败（rc={rc}）", out + err)
     pid = None
     for tok in out.replace(":", " ").split():
