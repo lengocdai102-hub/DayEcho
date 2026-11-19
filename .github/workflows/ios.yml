@@ -377,6 +377,29 @@ jobs:
           set -e
           python3 legal/assert_candidate_refresh.py
 
+      # ---- 4a-3. 断言 Info.plist 关键键存在 ----
+      #
+      # ★ 为什么要断言这个 ★
+      #
+      # `INFOPLIST_KEY_UIBackgroundModes` 在 `GENERATE_INFOPLIST_FILE=YES` 时
+      # 会被 Xcode **整体丢弃** —— 编译不报错、CI 全绿、产物照样打出来，
+      # 但最终 Info.plist 里**没有** `UIBackgroundModes`。
+      #
+      # 真实后果（实测 2026-11-19，CI 产物 fix4）：
+      #   * iOS 主 App：锁屏后无法接收并落盘手表传来的录音
+      #   * Watch App：锁屏/息屏后录音进程被系统挂起
+      #
+      # 同类问题：`NSSupportsLiveActivities` 在 pbxproj 里从未出现过，
+      # 而 CaptureKeepAlive.swift:103 真的在调 `Activity.request(...)`
+      # ⇒ Live Activity 一直起不来（录音时没有保活）。
+      #
+      # ⇒ 两个 App target 已改用显式 Info.plist（GENERATE_INFOPLIST_FILE=NO），
+      #    这里对 plist 文件本身做硬断言，防止回归。
+      - name: Assert Info.plist required keys
+        run: |
+          set -e
+          python3 legal/assert_info_plist_keys.py
+
       - name: Build iOS app (simulator)
         run: |
           # ★ 先清磁盘（2026-11-16 新增）★

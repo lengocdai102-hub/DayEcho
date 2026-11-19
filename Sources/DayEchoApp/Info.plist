@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>DayEcho</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<!--
+		★ 主题色 ★
+		自动生成的 plist 里会有 NSAccentColorName = AccentColor
+		（Resources/Assets.xcassets/AccentColor.colorset 确实存在），
+		换成显式 plist 后必须自己写上，否则主 App 掉主题色。
+	-->
+	<key>NSAccentColorName</key>
+	<string>AccentColor</string>
+	<!--
+		★★ 为什么这个文件必须存在 ★★
+		································
+		`INFOPLIST_KEY_UIBackgroundModes` 这个 build setting
+		**在 GENERATE_INFOPLIST_FILE=YES 时会被 Xcode 整体丢弃**。
+
+		实测证据（CI 产物 fix4，2026-11-19）：
+		  pbxproj 里写的是   INFOPLIST_KEY_UIBackgroundModes = "audio processing";
+		  产物 Info.plist 里  UIBackgroundModes = <完全不存在>
+
+		★ 同一次构建里的对照组 ★
+		  INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+		  产物 Info.plist 里  UISupportedInterfaceOrientations = ['UIInterfaceOrientationPortrait'];
+		⇒ 同样是标量写法、同样是 GENERATE_INFOPLIST_FILE=YES，
+		  那个键成功变成了数组，唯独 UIBackgroundModes 整个被丢掉。
+		⇒ 不是「数组语义不支持」，是这个键在自动生成模式下不被处理。
+
+		★★ 丢掉它的后果 ★★
+		- `audio`：手机在后台/锁屏时无法接收并落盘手表传来的录音，
+		          用户锁屏后手机端就停止接收 ——
+		          表现为「手机不在身边时手表录音传不过来」。
+		- `processing`：后台语音转写任务会被系统挂起。
+
+		⇒ 唯一可靠的做法就是提供真实的 Info.plist 文件，
+		   在里面写真正的 <array>。
+		   （与 Sources/DayEchoWidget/Info.plist 同一套做法，
+		     那份是为了 NSExtension 字典，本份是为了后台模式与 Live Activity。）
+	-->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>processing</string>
+	</array>
+	<!--
+		★★ NSSupportsLiveActivities ★★
+		································
+		主 App 的 Sources/DayEchoApp/CaptureKeepAlive.swift 里
+		第 103 行有 `try Activity.request(...)`，
+		真的在请求 Live Activity（用于录音倒计时保活）。
+
+		没有 `NSSupportsLiveActivities = true` ⇒
+		`Activity.request` 直接抛错 ⇒
+		CaptureKeepAlive.lastError = "Live Activity 启动失败：…"
+		⇒ 录音时没有 Live Activity 保活，系统可能在后台把录音进程停掉。
+
+		★ 为什么这个键 pbxproj 里从来没出现过 ★
+		它是 2021 年之后新增的键，
+		之前的 INFOPLIST_KEY_* 写法清单里压根没有它，
+		所以一直没人设过 —— 一设就会被丢。
+	-->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<!--
+		★★ 权限说明文案 ★★
+		································
+		这些是**声明式**的：不加 ⇒ 用户第一次触发录音/转写/写提醒时，
+		系统直接拒绝并**静默失败**（没有任何弹窗解释为什么），
+		对健忘者表现为「按了没反应」—— 最伤信任的失败模式。
+	-->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的设备上。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>DayEcho 需要在你的 iPhone 上把你的语音转成文字，用来提取提醒。转写完全在本机进行，录音不会上传。</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>DayEcho 需要写入提醒事项，才能把你确认过的提醒放进系统提醒。你确认后才会写入，随时可以撤销。</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>DayEcho 需要写入提醒事项，才能把你确认过的提醒放进系统提醒。你确认后才会写入，随时可以撤销。</string>
+	<!-- 启动屏：空 dict = 使用默认启动屏（Xcode 13+ 标准做法） -->
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+</dict>
+</plist>

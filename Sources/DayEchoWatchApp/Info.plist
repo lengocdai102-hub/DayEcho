@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>DayEcho</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<!--
+		★★ Watch App 的关键键：一个都不能少 ★★
+		································
+		WKApplication = YES
+			现代 SwiftUI watch App 的必需标记。
+			缺了 ⇒ 手表系统不认这个 app。
+
+		WKCompanionAppBundleIdentifier = com.dayecho.app
+			反向绑定到宿主 iOS App。
+			★ 这里必须写**真实字面量**，不能用 $(BUNDLE_ID) ——
+			  BUNDLE_ID 是 gen_xcodeproj.rb 里的 Ruby 局部变量，
+			  不是 Xcode build setting，Xcode 不会替换它，
+			  产物里会留下字面量 "$(BUNDLE_ID)" ⇒ 指针直接失效。
+			★ 重签工具（SideLoadly 等）会改主 App 的 bundle ID，
+			  但**不一定同步改这个指针** ⇒ 断链 ⇒ 手表端装不上 / 认不出。
+			  所以主 App 与 Watch App 的 bundle ID 必须成对改。
+
+		WKRunsIndependentlyOfCompanionApp = NO
+			依附式手表 App（非独立 App）。
+	-->
+	<key>WKApplication</key>
+	<true/>
+	<key>WKCompanionAppBundleIdentifier</key>
+	<string>com.dayecho.app</string>
+	<key>WKRunsIndependentlyOfCompanionApp</key>
+	<false/>
+	<!--
+		★★ UIBackgroundModes ★★
+		································
+		同 iOS 主 App：`INFOPLIST_KEY_UIBackgroundModes` 在
+		GENERATE_INFOPLIST_FILE=YES 时会被整体丢弃（实测 fix4 产物里没有）。
+		手表侧录语音要后台保活，必须用真实 <array>。
+	-->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>processing</string>
+	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的手表上。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>DayEcho 需要在你的设备上把语音转成文字，用来提取提醒。转写完全在本机进行，录音不会上传。</string>
+</dict>
+</plist>

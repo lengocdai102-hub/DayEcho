@@ -250,7 +250,16 @@ watch_target.build_configurations.each do |cfg|
   # 真实 Xcode 工程里 watch app target 用的是 SDKROOT = auto，
   # 这样 Xcode 才能在 iOS 构建时正确产出并嵌入 watch 变体。
   s['SDKROOT'] = 'auto'
-  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  # ★ 用真实的 Info.plist 文件，不用 GENERATE_INFOPLIST_FILE ★
+  #
+  # ★ 为什么必须用真实文件 ★
+  # `INFOPLIST_KEY_UIBackgroundModes` 在 GENERATE_INFOPLIST_FILE=YES 时
+  # 会被 Xcode **整体丢弃**（实测 fix4 产物：watch 侧无此键）。
+  # 手表侧全天录音靠 `UIBackgroundModes = audio` 保活，
+  # 丢了它 ⇒ 锁屏/息屏后录音进程被系统挂起。
+  # ⇒ 只有提供真实 Info.plist 文件、在里面写真正的 <array> 才可靠。
+  s['GENERATE_INFOPLIST_FILE'] = 'NO'
+  s['INFOPLIST_FILE'] = 'Sources/DayEchoWatchApp/Info.plist'
   # ★ framework 的 rpath —— 没有它 dyld 找不到 DayEchoKit.framework ★
   #
   # ★ 两个键都要写 ★
@@ -261,22 +270,23 @@ watch_target.build_configurations.each do |cfg|
   s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks'
   s['LD_RUNPATH_SEARCH_PATHS'] =
     '$(inherited) @executable_path/Frameworks @loader_path/Frameworks'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
-  # ★ 现代 SwiftUI watch App 的必需标记键
-  s['INFOPLIST_KEY_WKApplication'] = 'YES'
-  # 依附式手表 App：反向绑定到宿主 iOS App
-  s['INFOPLIST_KEY_WKCompanionAppBundleIdentifier'] = BUNDLE_ID
-  # 依附式（不是独立手表 App）
-  s['INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp'] = 'NO'
-  # ★ 绝不能设 WKWatchOnly=YES（那是独立手表 App 语义，与嵌入互斥）
+  # ★ 显示名 / WKApplication / Companion 指针 / 后台模式 / 权限文案
+  #   全部在 Sources/DayEchoWatchApp/Info.plist 里 ★
+  #
+  # 本 target 用 GENERATE_INFOPLIST_FILE = 'NO',
+  # 所以 INFOPLIST_KEY_* 这一整套**完全不生效**（会被 Xcode 忽略）。
+  # ⇒ 单一真源 = Sources/DayEchoWatchApp/Info.plist。
+  #
+  # ★ WKWatchOnly 绝不能出现 ★
+  # 那是独立手表 App 的语义，与「嵌入宿主的依附式手表 App」互斥。
+  # 显式删除，防止以后有人误加。
   s.delete('INFOPLIST_KEY_WKWatchOnly')
-  # ★ 麦克风权限声明（watchOS 必填）★
+  # ★ 麦克风权限声明（watchOS 必填）在
+  #   Sources/DayEchoWatchApp/Info.plist 里 ★
   # 漏掉这条的真实后果：在手表上点「开始录音」会被系统直接拒绝，
   # AVAudioSession 激活失败，而且**没有任何错误提示**——
   # 表现为「按了没反应」。iOS 侧声明了不代表 watch 侧自动继承，
   # 每个 target 都要各自声明自己的权限。
-  s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] =
-    'DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的设备上。'
   # ★ 后台音频模式（全天录音的正解）★
   #
   # UIBackgroundModes = audio 是 watchOS 上持续录音的关键：
@@ -286,7 +296,12 @@ watch_target.build_configurations.each do |cfg|
   # WKExtendedRuntimeSession 不能替代它 —— 那个 API 有严格的系统时长配额，
   # 是给闹钟/正念/理疗这类短时场景设计的，用来做全天录音会被系统掐断。
   # 这里把 WKExtendedRuntimeSession 当作补充保活手段，UIBackgroundModes 才是主力。
-  s['INFOPLIST_KEY_UIBackgroundModes'] = ['audio']
+  #
+  # ★ 这个值写在 Sources/DayEchoWatchApp/Info.plist 里，不是这里 ★
+  # INFOPLIST_KEY_UIBackgroundModes 在 GENERATE_INFOPLIST_FILE=YES 时
+  # 会被 Xcode **整体丢弃**（实测 fix4 产物里 watch 侧也没有这个键）。
+  # ⇒ Watch App 改用真实 Info.plist 文件（见本 target 的
+  #   GENERATE_INFOPLIST_FILE = 'NO' / INFOPLIST_FILE 设置）。
   # ★ watch 图标集名 ★
   #
   # watchOS 的图标集叫 `WatchAppIcon.appiconset`（不是 iOS 的 `AppIcon`）。
@@ -298,7 +313,9 @@ watch_target.build_configurations.each do |cfg|
   s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks'
   s['LD_RUNPATH_SEARCH_PATHS'] =
     '$(inherited) @executable_path/Frameworks @loader_path/Frameworks'
-  s['INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents'] = 'YES'
+  # INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents 在
+  # GENERATE_INFOPLIST_FILE=NO 时被忽略；
+  # 如需该键，写进 Sources/DayEchoWatchApp/Info.plist。
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
@@ -482,7 +499,24 @@ ios_target.build_configurations.each do |cfg|
   s['SWIFT_VERSION'] = '6.0'
   s['IPHONEOS_DEPLOYMENT_TARGET'] = IOS_MIN
   s['TARGETED_DEVICE_FAMILY'] = '1,2'
-  s['GENERATE_INFOPLIST_FILE'] = 'YES'
+  # ★ 用真实的 Info.plist 文件，不用 GENERATE_INFOPLIST_FILE ★
+  #
+  # ★ 为什么必须用真实文件 ★
+  # 1) `INFOPLIST_KEY_UIBackgroundModes` 在 GENERATE_INFOPLIST_FILE=YES 时
+  #    会被 Xcode **整体丢弃**（实测 fix4 产物里主 App 无此键）。
+  #    丢了它 ⇒ 手机锁屏后无法接收并落盘手表传来的录音。
+  # 2) `NSSupportsLiveActivities` 在 pbxproj 里从未出现过，
+  #    而 Sources/DayEchoApp/CaptureKeepAlive.swift:103 真的在调
+  #    `Activity.request(...)` ⇒ 没有这个键，Live Activity 直接抛错，
+  #    录音时没有 Live Activity 保活，系统可能在后台停掉录音进程。
+  #
+  # ★ 对照组证据（不是「数组语义不支持」）★
+  #   INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+  #   → 产物里成功变成 ['UIInterfaceOrientationPortrait']
+  #   同样是标量写法 + 同样是 GENERATE_INFOPLIST_FILE=YES，
+  #   那个键成功，唯独 UIBackgroundModes 整个被丢。
+  s['GENERATE_INFOPLIST_FILE'] = 'NO'
+  s['INFOPLIST_FILE'] = 'Sources/DayEchoApp/Info.plist'
   # ★ framework 的 rpath —— 没有它 dyld 找不到 DayEchoKit.framework ★
   #
   # ★ 两个键都要写 ★
@@ -497,45 +531,21 @@ ios_target.build_configurations.each do |cfg|
   s['LD_RUNPATH'] = '$(inherited) @executable_path/Frameworks'
   s['LD_RUNPATH_SEARCH_PATHS'] =
     '$(inherited) @executable_path/Frameworks @loader_path/Frameworks'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
-  s['INFOPLIST_KEY_UILaunchScreen_Generation'] = 'YES'
-  s['INFOPLIST_KEY_UISupportedInterfaceOrientations'] = 'UIInterfaceOrientationPortrait'
-  s['INFOPLIST_KEY_NSMicrophoneUsageDescription'] =
-    'DayEcho 需要麦克风来录制你的语音片段。录音只保存在你的设备上。'
-  # ★ 提醒事项权限说明（阶段 3）★
+  # ★ 显示名 / 权限文案 / 后台模式 / Live Activity 全部在
+  #   Sources/DayEchoApp/Info.plist 里 ★
   #
-  # 没有这一句，系统在弹权限框时只显示 App 名字，
-  # 用户不知道授予后会发生什么 —— 对健忘者尤其糟糕，
-  # 他可能稀里糊涂点了「不允许」，之后整个提醒链路就断了。
-  # 说明写清「只写你确认过的提醒」，让授权是有预期的行为。
-  s['INFOPLIST_KEY_NSRemindersFullAccessUsageDescription'] =
-    'DayEcho 需要写入提醒事项，才能把你确认过的提醒放进系统提醒。你确认后才会写入，随时可以撤销。'
-  s['INFOPLIST_KEY_NSRemindersUsageDescription'] =
-    'DayEcho 需要写入提醒事项，才能把你确认过的提醒放进系统提醒。你确认后才会写入，随时可以撤销。'
-  # ★ 语音识别权限说明（P0-1 端侧转写）★
-  #
-  # ★ 为什么现在就要加，即使转写代码还没写 ★
-  #
-  # 权限键是**声明式**的：不加 ⇒ 用户第一次触发转写时，
-  # 系统直接拒绝并**静默失败**（没有任何弹窗解释为什么），
-  # 对健忘者表现为「按了没反应」—— 最伤信任的失败模式。
-  # 提前加好，等转写代码落地时权限弹窗就能正常出现。
-  #
-  # ★ 为什么说明里要写「只在本机」★
-  #
-  # 端侧转写用 `SFSpeechRecognizer` 的 `requiresOnDeviceRecognition = true`，
-  # 音频不出设备。明确写出来，用户授权时知道数据不出机器。
-  s['INFOPLIST_KEY_NSSpeechRecognitionUsageDescription'] =
-    'DayEcho 需要在你的 iPhone 上把你的语音转成文字，用来提取提醒。转写完全在本机进行，录音不会上传。'
+  # 本 target 用 GENERATE_INFOPLIST_FILE = 'NO'，
+  # 所以 INFOPLIST_KEY_* 这一整套**完全不生效**（会被 Xcode 忽略）。
+  # 留在这里会造成「两处真源」，改了一处忘了另一处 ⇒ 产物与预期不符。
+  # ⇒ 单一真源 = Sources/DayEchoApp/Info.plist。
   # ★ 已删除 NSHealthShareUsageDescription ★
   # 本项目不接入 HealthKit（仓库里没有任何 HKHealthStore 调用），
   # 声明一个用不到的权限只会让用户在授权弹窗里困惑，
   # App Store 审核也会追问「为什么需要读取健康数据」。用不到就删。
   #
-  # ★ 顺带：iOS 侧也需要后台音频模式 ★
+  # ★ iOS 侧的后台音频模式在 Sources/DayEchoApp/Info.plist 里 ★
   # 否则手机在后台时无法接收并落盘手表传来的录音，
   # 用户锁屏后手机端就停止接收 —— 表现为「手机不在身边时手表录音传不过来」。
-  s['INFOPLIST_KEY_UIBackgroundModes'] = ['audio', 'processing']
   s['ASSETCATALOG_COMPILER_APPICON_NAME'] = 'AppIcon'
   s['CODE_SIGN_STYLE'] = 'Automatic'
   s['SWIFT_EMIT_LOC_STRINGS'] = 'YES'
@@ -712,7 +722,7 @@ watch_widget_target.build_configurations.each do |cfg|
   # ⇒ 只有提供真实 Info.plist 文件才可靠。
   s['GENERATE_INFOPLIST_FILE'] = 'NO'
   s['INFOPLIST_FILE'] = 'Sources/DayEchoWatchWidget/Info.plist'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  # 显示名在各自的 Sources/<target>/Info.plist 里
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
@@ -783,7 +793,7 @@ ios_widget_target.build_configurations.each do |cfg|
   # ⇒ 真机安装必报 IXErrorDomain Code=17 (extensionDictionary must be set)。
   s['GENERATE_INFOPLIST_FILE'] = 'NO'
   s['INFOPLIST_FILE'] = 'Sources/DayEchoWidget/Info.plist'
-  s['INFOPLIST_KEY_CFBundleDisplayName'] = 'DayEcho'
+  # 显示名在各自的 Sources/<target>/Info.plist 里
   s['CODE_SIGNING_ALLOWED'] = 'NO'
   s['CODE_SIGNING_REQUIRED'] = 'NO'
   s['CODE_SIGN_IDENTITY'] = ''
