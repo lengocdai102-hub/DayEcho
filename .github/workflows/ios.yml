@@ -502,8 +502,18 @@ jobs:
             echo "::notice::iOS 模拟器产物不存在，跳过 App Group 断言（未验证，不等于通过）"
             exit 0
           fi
+          # ★ 设备名必须和上面 iOS 门禁用的**同一个** ★
+          #   上一步装的是 iPhone 16e，这里查 iPhone 17 Pro ⇒ 查的是另一台设备
+          #   ⇒ 容器当然不存在。（这个坑踩过：查错设备还以为功能没通）
+          #
+          # ★ --xcent 显式传入 ★
+          #   entitlements 在 Xcode 26.3 模拟器产物里既不在 __TEXT 段也不在包内，
+          #   只有 Build/Intermediates.noindex 下的 -Simulated.xcent 稳定可读。
+          DD="$RUNNER_TEMP/DerivedData/Build/Intermediates.noindex/DayEcho.build/Debug-iphonesimulator"
           python3 legal/assert_app_group_shared_container.py \
-            --device "iPhone 17 Pro" \
+            --device "iPhone 16e" \
+            --xcent "$DD/DayEcho.build/DayEcho.app-Simulated.xcent" \
+            --xcent "$DD/DayEchoWidget.build/DayEchoWidget.appex-Simulated.xcent" \
             --target app:"$IOS_APP" \
             --target widget:"$IOS_APP/PlugIns/DayEchoWidget.appex"
 
@@ -630,11 +640,13 @@ jobs:
             echo "::notice::未取到 watch 设备，跳过 App Group 断言（未验证，不等于通过）"
             exit 0
           fi
+          WDD="$RUNNER_TEMP/DerivedDataWatch/Build/Intermediates.noindex/DayEcho.build/Debug-watchsimulator"
           python3 legal/assert_app_group_shared_container.py \
             --device "$WATCH_NAME" \
-            --target watch:"$WATCH_APP"
-
-            --target-type watch
+            --xcent "$WDD/DayEchoWatch.build/DayEchoWatch.app-Simulated.xcent" \
+            --xcent "$WDD/DayEchoWatchWidget.build/DayEchoWatchWidget.appex-Simulated.xcent" \
+            --target watch:"$WATCH_APP" \
+            --target watchwidget:"$WATCH_APP/PlugIns/DayEchoWatchWidget.appex"
 
       # ---- 6. 真机架构构建（arm64 device）----
       # 模拟器架构装不上真机、也传不上 App Store Connect。

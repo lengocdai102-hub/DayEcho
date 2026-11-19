@@ -147,6 +147,18 @@ def xcent_candidates(bundle_path: str) -> list[str]:
     return res
 
 
+def bundle_id_of(bundle_path: str) -> str:
+    """从 bundle 的 Info.plist 读 CFBundleIdentifier。"""
+    ip = os.path.join(bundle_path, "Info.plist")
+    if not os.path.exists(ip):
+        return ""
+    try:
+        with open(ip, "rb") as fh:
+            return (plistlib.load(fh).get("CFBundleIdentifier") or "").strip()
+    except Exception:
+        return ""
+
+
 def read_entitlements(bundle_path: str) -> tuple[dict | None, str]:
     """从**签名信息**里读 entitlements（不是读源码）。
 
@@ -350,38 +362,83 @@ def main() -> int:
     udid = m.group(2)
     ok(f"设备 UDID: {udid}")
 
-    # 容器目录由 CoreSimulator 的 container manager 创建
+    # ★ 权威做法：问系统本身 ★
+    #   xcrun simctl get_app_container <device> <bundle-id> groups
+    #   → 直接报告「这个 App 实际被分配了哪些 group 容器」
+    #   这是 CoreSimulator container manager 的答案，比在磁盘上猜强得多。
+    #   实测输出格式（tab 分隔）：
+    #     group.com.dayecho.app.H98V6YZ5QL<TAB>/…/Shared/AppGroup/B08EC15D-…
+    #
+    # ★ 为什么不能只扫磁盘 ★
+    #   磁盘上存在 group 目录只能证明「系统建过这个 group」，
+    #   不能证明「**这个 App** 被授权使用它」。
+    #   两者都可能不同（比如 App 根本没带这个 entitlement）。
+    system_groups: dict[str, str] = {}
+    for spec in args.target:
+        if ":" not in spec:
+            continue
+        ttype, path = spec.split(":", 1)
+        bid = bundle_id_of(path)
+        if not bid:
+            continue
+        rc2, out2, err2 = sh(
+            f'xcrun simctl get_app_container "{args.device}" "{bid}" groups', timeout=180
+        )
+        if rc2 != 0:
+            warn(f"[{ttype}] 查询 group 容器失败（rc={rc2}）：{err2.strip()[:200]}")
+            continue
+        for line in out2.strip().split("\n"):
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                system_groups[parts[0].strip()] = parts[1].strip()
+
+    if system_groups:
+        if args.group_id in system_groups:
+            ok(f"系统已为 App 分配 group 容器: {args.group_id}")
+            ok(f"  → {system_groups[args.group_id]}")
+        else:
+            bad(f"系统没有给 App 分配 {args.group_id} 这个 group 容器")
+            bad(f"    系统实际分配: {sorted(system_groups.keys())}")
+            print(f"{RED}❌ App Group 容器未被系统承认{RESET}")
+            return 1
+    else:
+        # 兜底：扫磁盘（App 可能还没装，simctl 会失败）
+        warn("simctl 未返回 group 分配信息，退回磁盘扫描")
+
+    # 兜底/补充：磁盘上确认容器目录真实存在
     gc_root = os.path.expanduser(
         f"~/Library/Developer/CoreSimulator/Devices/{udid}/data/Containers/Shared/AppGroup"
     )
-    if not os.path.isdir(gc_root):
-        warn(f"设备容器目录不存在: {gc_root}")
-        print(f"{YELLOW}⚠ 无法验证设备上的容器{RESET}")
-        return 1
-
     hit = None
-    for g in os.listdir(gc_root):
-        meta = os.path.join(gc_root, g, ".com.apple.mobile_container_manager.metadata.plist")
-        if not os.path.exists(meta):
-            continue
-        try:
-            with open(meta, "rb") as fh:
-                ident = plistlib.load(fh).get("MCMMetadataIdentifier")
-        except Exception:
-            continue
-        if ident == args.group_id:
-            hit = os.path.join(gc_root, g)
-            break
+    if os.path.isdir(gc_root):
+        for g in os.listdir(gc_root):
+            meta = os.path.join(gc_root, g, ".com.apple.mobile_container_manager.metadata.plist")
+            if not os.path.exists(meta):
+                continue
+            try:
+                with open(meta, "rb") as fh:
+                    ident = plistlib.load(fh).get("MCMMetadataIdentifier")
+            except Exception:
+                continue
+            if ident == args.group_id:
+                hit = os.path.join(gc_root, g)
+                break
 
     if not hit:
-        bad(f"模拟器上不存在 group 容器 {args.group_id}")
-        bad(f"    查过: {gc_root}")
-        print(f"{RED}❌ App Group 容器未创建{RESET}")
-        return 1
-
-    ok(f"模拟器已创建 group 容器: {hit}")
-    subs = sorted(os.listdir(hit))
-    ok(f"容器内容: {subs if subs else '(空)'}")
+        if system_groups:
+            # 系统已确认，磁盘路径可能是别的机器/别的用户
+            ok(f"容器（系统确认）: {system_groups.get(args.group_id, '?')}")
+        else:
+            bad(f"模拟器上不存在 group 容器 {args.group_id}")
+            bad(f"    查过: {gc_root}")
+            print(f"{RED}❌ App Group 容器未创建{RESET}")
+            return 1
+    else:
+        ok(f"模拟器已创建 group 容器: {hit}")
+        subs = sorted(os.listdir(hit))
+        ok(f"容器内容: {subs if subs else '(空)'}")
 
     print()
     print(f"{GREEN}✅ App Group 共享容器断言全部通过{RESET}")
