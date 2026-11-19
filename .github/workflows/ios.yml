@@ -657,9 +657,15 @@ jobs:
             -path "*/Build/Products/Release-iphoneos/DayEcho.app" -type d 2>/dev/null | head -n 1)
 
           if [ -z "$HOST_APP" ]; then
-            echo "❌ 未找到 Release-iphoneos/DayEcho.app，打印 Products 目录结构："
+            # ★ 不要在这里再判红 ★
+            # device build 没跑 ⇒ 说明是**更早的步骤**失败了。
+            # 本步骤的职责是"失败时给出根因"，而不是重复制造第二个失败信号
+            # （run 44593603881 的教训：真正的根因是 simulator launch 挂死，
+            #   这里却报"未找到 Release-iphoneos/DayEcho.app"，属于误导性根因）。
+            echo "ℹ️ 未找到 Release-iphoneos/DayEcho.app —— device build 未执行，"
+            echo "   说明失败发生在更早的步骤。以下是 Products 目录结构供参考："
             find "$RUNNER_TEMP" ~/Library/Developer/Xcode/DerivedData -maxdepth 5 -path "*/Build/Products/*" 2>/dev/null
-            exit 1
+            exit 0
           fi
 
           WATCH_APP="$HOST_APP/Watch/DayEchoWatch.app"
@@ -705,7 +711,11 @@ jobs:
           WATCH_APP="$HOST_APP/Watch/DayEchoWatch.app"
 
           if [ ! -d "$WATCH_APP" ]; then
-            echo "::error::Pre-Package：找不到 $WATCH_APP"
+            # ★ 不要用 ::error:: ★
+            # device build 没执行 ⇒ 失败发生在更早的步骤，
+            # 这里只是补充诊断信息，不应该再制造第二个失败信号。
+            # （::error:: annotation 本身就会把 job 判红，即使 exit 0）
+            echo "::notice::Pre-Package：device build 未执行（找不到 $WATCH_APP），跳过层级断言"
             echo "--- 宿主包实际结构 ---"
             find "$HOST_APP" -maxdepth 3 | sed "s|$HOST_APP|.|" | head -30
             exit 0

@@ -248,10 +248,33 @@ def main() -> None:
         )
     info(f"✓ LaunchServices 已登记 {args.bundle_id}")
 
-    # ---- 5. 启动 ----
-    rc, out, err = sh(
-        f'xcrun simctl launch "{args.device}" {args.bundle_id} 2>&1', timeout=300
-    )
+    # ---- 5. 启动（带重试）----
+    # ★ 为什么必须重试 ★
+    # CI runner 上 `simctl launch` 会**间歇性挂死**：命令不返回、也不报错。
+    # 实测同一份代码：上一轮 4 秒内启动成功，这一轮 300 秒超时挂死
+    # （run 44584285050 ✅ / run 44593603881 ❌）。
+    # 根因是 runner 负载高时 simctl 等 launchd/SpringBoard 响应不及时，
+    # 不是产品问题 —— 但门禁必须能区分「产品起不来」和「runner 抽风」。
+    # ⇒ 重试 N 次，每次独立计时；只有**全部**失败才判红。
+    LAUNCH_ATTEMPTS = 3
+    LAUNCH_TIMEOUT = 150
+    rc, out, err = 1, "", ""
+    for attempt in range(1, LAUNCH_ATTEMPTS + 1):
+        rc, out, err = sh(
+            f'xcrun simctl launch "{args.device}" {args.bundle_id} 2>&1',
+            timeout=LAUNCH_TIMEOUT,
+        )
+        if rc == 0:
+            if attempt > 1:
+                info(f"✓ 启动成功（第 {attempt} 次尝试，前几次 runner 挂死）")
+            break
+        if "超时" in err:
+            info(f"::notice::第 {attempt}/{LAUNCH_ATTEMPTS} 次启动超时（simctl 在 runner 上挂死），重试")
+            # 挂死后 simctl 可能残留锁，先把残留进程清掉
+            sh(f'pkill -f "simctl launch.*{args.bundle_id}" 2>/dev/null || true')
+            time.sleep(5)
+        else:
+            break
     if rc != 0:
         # ★ 失败时必须把证据打出来，否则只能靠猜 ★
         print("--- 启动失败诊断 ---", flush=True)
@@ -387,23 +410,51 @@ def _crash_name_matches(bundle_id: str, filename: str) -> bool:
     不是 bundle id（com.dayecho.app.H98V6YZ5QL）。
     ⇒ 原实现用 bundle_id.split(".")[-1] 得到的是 Team ID "H98V6YZ5QL"，
       永远匹配不到任何崩溃文件 ⇒ 崩溃检查形同虚设。
+
+    ★ 两个已踩过的坑 ★
+    1) 不能无条件把 "DayEcho" 塞进候选 —— 否则任何 bundle id
+       （哪怕 com.apple.mobilesafari）都会匹配到所有 DayEcho* 崩溃
+       ⇒ 跨 target 误判（实测踩过）。
+    2) 不能用"泛包含"匹配 —— 主 App 的候选 "DayEcho" 是
+       "DayEchoWidget" 的子串 ⇒ 主 App 会误抓 Widget 的崩溃。
+    ⇒ 解法：把崩溃文件名解析成**词干**（第一个 '-' 之前的部分），
+      再与该 bundle id 推导出的候选做**精确比对**。
     """
-    base = bundle_id.rsplit(".", 1)[-1]
-    parts = base.split(".")
-    if parts and parts[-1].isupper() and len(parts[-1]) == 10:
-        parts = parts[:-1]
-    candidates = set()
-    joined = "".join(p.capitalize() for p in parts)
-    candidates.add(joined)
-    candidates.add("DayEcho")
-    for c in list(candidates):
-        candidates.add(c.replace("App", ""))
-        candidates.add(c.replace("Watch", ""))
-    low = filename.lower()
-    for c in candidates:
-        if c and c.lower() in low:
-            return True
-    return False
+    # ---- 由 bundle id 推导候选可执行名 ----
+    segs = bundle_id.split(".")
+    # 去掉 Team ID 段（如 H98V6YZ5QL）—— 它可能在**中间**，
+    # 不一定在末尾：
+    #   com.dayecho.app.H98V6YZ5QL              → Team ID 在末段
+    #   com.dayecho.app.H98V6YZ5QL.watchkitapp   → Team ID 在倒数第二段
+    segs = [x for x in segs if not (x.isupper() and len(x) == 10)]
+    if "dayecho" not in [x.lower() for x in segs]:
+        return False
+    idx = [x.lower() for x in segs].index("dayecho")
+    tail = segs[idx + 1:]          # 例如 ["app"] / ["app","widget"] / ["app","watchkitapp"]
+    # 去掉通用段 "app"
+    tail = [t for t in tail if t.lower() != "app"]
+    lows = [t.lower() for t in tail]
+    # ★ 按 token 语义组合，不做字符串拼接 ★
+    #   watchkitapp      → Watch
+    #   watchwidget      → Watch + Widget
+    #   widget           → Widget
+    suffix = ""
+    if "watchkitapp" in lows or "watchwidget" in lows:
+        suffix += "Watch"
+    if "watchwidget" in lows or "widget" in lows:
+        suffix += "Widget"
+    if not suffix:
+        # 未识别的后缀：退回通用 capitalize 组合
+        suffix = "".join(t.capitalize() for t in tail)
+    candidates = {"DayEcho" + suffix}
+    if not suffix:
+        candidates.add("DayEcho")
+
+    # ---- 由文件名解析词干 ----
+    stem = filename.split(".")[0]        # 去掉 .ips / .crash
+    stem = stem.split("-")[0]           # 去掉 -2026-11-20-...
+    stem = stem.strip()
+    return stem in candidates
 
 
 def collect_crash_reports(device: str, bundle_id: str) -> str:
@@ -413,13 +464,20 @@ def collect_crash_reports(device: str, bundle_id: str) -> str:
     )
     chunks = []
     # 宿主机侧：模拟器崩溃会落到这里
-    for pat in (f"{bundle_id}*.ips", f"{bundle_id}*.crash"):
-        hits = globmod.glob(os.path.join(base, pat))
-        for h in hits:
-            try:
-                chunks.append(open(h, errors="replace").read()[:4000])
-            except OSError:
-                pass
+    # ★ 必须用 _crash_name_matches，不能用 glob(f"{bundle_id}*.ips") ★
+    #   崩溃文件名用的是**可执行名**（DayEcho-2026.ips / DayEchoWatch-*.ips），
+    #   不是 bundle id ⇒ 用 bundle id 做 glob 永远匹配不到。
+    #   （实测：修复前的崩溃报告就在 ~/Library/Logs/DiagnosticReports/
+    #     DayEchoWatch-2026-11-20-023536.ips，靠 glob(bundle_id) 抓不到。）
+    for h in globmod.glob(os.path.join(base, "*.ips")) + globmod.glob(
+        os.path.join(base, "*.crash")
+    ):
+        if not _crash_name_matches(bundle_id, os.path.basename(h)):
+            continue
+        try:
+            chunks.append(open(h, errors="replace").read()[:4000])
+        except OSError:
+            pass
     # 模拟器侧
     dev_dir = os.path.expanduser(
         "~/Library/Developer/CoreSimulator/Devices"
