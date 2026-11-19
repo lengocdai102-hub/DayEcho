@@ -426,6 +426,52 @@ jobs:
             COMPILER_INDEX_STORE_ENABLE=NO \
             build
 
+      # ---- 4a. ★★ 模拟器装机 + 启动门禁（2026-11-19 新增）★★
+      #
+      # ★ 为什么必须有这一步 ★
+      #
+      # 2026-11-19 复盘：过去四天的 CI **只做到「编译通过」**，
+      # 从未验证过「App 装上能不能启动」。
+      #
+      # 上一行那个「Build iOS app (simulator)」看着像模拟器测试，其实不是 ——
+      # `-destination 'generic/platform=iOS Simulator'` 的 `generic` 表示
+      # **只编译**，产出的 .app 不会被送到任何一台模拟器上。
+      # 于是「编译成功」被反复当成「功能验证」，
+      # 中间那道黑箱（装 → 启动 → 不崩）整整四天没人跨过。
+      #
+      # ★ 这个门禁能提前发现什么 ★
+      # - Info.plist 缺键 / 类型错（装不上）
+      # - App Group 不匹配（装不上）
+      # - 启动即崩溃（EXC_BREAKPOINT / SIGTRAP）
+      # - 缺失 @main、源文件没进 target 的 Sources 阶段
+      #
+      # ★ 为什么它不需要签名 ★
+      # 模拟器不校验 provisioning profile ⇒ 这道门禁
+      # **不依赖 Apple 账号、不依赖证书、不消耗真机**。
+      # ⇒ 每天都能跑，不会再出现「卡在 profile 就什么都测不了」。
+      #
+      # ★ 为什么用具体设备而不是 generic ★
+      # 必须有真实设备实例才能装。设备名固定，避免每次换机型。
+      - name: Assert simulator install and launch
+        run: |
+          set -e
+          # ★ CI runner 上先起模拟器 GUI，否则 simctl install 会卡死 ★
+          # （本地实测：不启 GUI 时 install 直接超时，无任何输出）
+          xcrun simctl boot "iPhone 16e" 2>&1 || true
+          open -a Simulator
+          sleep 20
+
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Debug-iphonesimulator/DayEcho.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::模拟器产物不存在: $APP"
+            exit 1
+          fi
+
+          python3 legal/assert_simulator_install_launch.py \
+            --app "$APP" \
+            --device "iPhone 16e" \
+            --bundle-id com.dayecho.app.H98V6YZ5QL
+
       # ---- 4b. 单独 typecheck watchOS Extension ----
       # 先单独查一遍，错误和 iOS 构建的错误分开报，定位更快。
       #
