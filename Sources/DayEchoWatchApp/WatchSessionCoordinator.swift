@@ -42,6 +42,19 @@ final class WatchSessionCoordinator: NSObject, ObservableObject {
     /// 重复调度会取消前一个，所以必须自己做去重。
     private var hasScheduledBackgroundRefresh = false
 
+    /// ★ delegate 尚未就绪时，把调度请求挂起 ★
+    ///
+    /// ★ 为什么需要它 ★
+    /// `WKApplication.scheduleBackgroundRefresh` 在 delegate 为 nil 时会直接
+    /// **precondition 失败 → SIGABRT 秒崩**（实测崩溃报告：
+    ///   `requires that your WKApplicationDelegate (null) implement handleBackgroundTasks:`）
+    /// SwiftUI 的 `@WKApplicationDelegateAdaptor` 是在 App 主体初始化**之后**
+    /// 才把 delegate 注入 `WKApplication` 的，
+    /// 所以在 `App.init()` 里调用必然踩到 delegate == nil。
+    ///
+    /// ⇒ 这里记下"想调度"，等 delegate 就绪后再真正调度。
+    private var pendingBackgroundRefresh = false
+
     private override init() {
         super.init()
     }
@@ -95,7 +108,17 @@ final class WatchSessionCoordinator: NSObject, ObservableObject {
         // 已经挂了一个就不重复挂 —— 重复调度会把前一个取消掉，
         // 导致刷新时机变得不可预测
         guard !hasScheduledBackgroundRefresh else { return false }
+
+        // ★ 关键防御：delegate 没就绪时绝对不能调这个 API ★
+        // 否则系统直接 SIGABRT（不是抛异常，是进程被杀，catch 不到）。
+        guard WKApplication.shared().delegate != nil else {
+            // 挂起，等 delegate 就绪后由 flushPendingBackgroundRefresh() 补调度
+            pendingBackgroundRefresh = true
+            return false
+        }
+
         hasScheduledBackgroundRefresh = true
+        pendingBackgroundRefresh = false
 
         let fireDate = Date().addingTimeInterval(backgroundRefreshInterval)
 
@@ -115,6 +138,16 @@ final class WatchSessionCoordinator: NSObject, ObservableObject {
             }
         }
         return true
+    }
+
+    /// delegate 就绪后，补调度之前挂起的后台刷新请求。
+    ///
+    /// - Returns: 是否真的调度了
+    @discardableResult
+    func flushPendingBackgroundRefresh() -> Bool {
+        guard pendingBackgroundRefresh else { return false }
+        pendingBackgroundRefresh = false
+        return scheduleBackgroundRefresh()
     }
 
     /// 后台刷新任务被系统触发时调用（由 WKApplicationDelegate 转发进来）。

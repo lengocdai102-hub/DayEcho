@@ -133,6 +133,22 @@ def main() -> None:
     ap.add_argument("--device", default="iPhone 17 Pro")
     ap.add_argument("--bundle-id", default="com.dayecho.app.H98V6YZ5QL")
     ap.add_argument("--settle", type=int, default=12, help="启动后等待秒数")
+    ap.add_argument(
+        "--target-type",
+        choices=("app", "watch"),
+        default="app",
+        help="app=宿主 iOS App；watch=Watch App（依附式）",
+    )
+    ap.add_argument(
+        "--extensions",
+        default="",
+        help="逗号分隔的 extension bundle id 列表，做独立进程检查",
+    )
+    ap.add_argument(
+        "--companion-bundle-id",
+        default="com.dayecho.app.H98V6YZ5QL",
+        help="Watch 模式下宿主 App 的 bundle id（用于校验 WKCompanionAppBundleIdentifier）",
+    )
     args = ap.parse_args()
 
     app = os.path.abspath(args.app)
@@ -140,6 +156,8 @@ def main() -> None:
         fail(f"App 产物不存在: {app}")
     if not os.path.exists(os.path.join(app, "Info.plist")):
         fail(f"App 产物缺少 Info.plist: {app}")
+
+    args.extensions = [x.strip() for x in args.extensions.split(",") if x.strip()]
 
     # ---- 0. 设备级互斥锁（防并发 simctl 互相锁死）----
     lock_fh = acquire_device_lock(args.device)
@@ -157,6 +175,44 @@ def main() -> None:
     if not wait_for_boot(args.device):
         fail(f"模拟器 {args.device} 未能进入 Booted 状态")
     info(f"✓ 模拟器已启动: {args.device}")
+
+    # ---- 2a. Watch 模式：先校验依附关系声明 ----
+    # ★ 为什么必须先校验再装 ★
+    # Watch App 是**依附式**的：WKCompanionAppBundleIdentifier 必须指向宿主 App。
+    # 写错时，系统会在安装阶段直接拒绝，而且报错信息极其含糊
+    # （历史踩坑：Invalid value of WKCompanionAppBundleIdentifier key ...）。
+    # ⇒ 与其等系统报错，不如装之前就把自己的错抓出来。
+    if args.target_type == "watch":
+        info_path = os.path.join(app, "Info.plist")
+        def plist_read(key: str) -> str:
+            rc2, o2, _ = sh(
+                f'/usr/libexec/PlistBuddy -c "Print :{key}" "{info_path}" 2>&1'
+            )
+            return o2.strip()
+
+        actual_companion = plist_read("WKCompanionAppBundleIdentifier")
+        if actual_companion != args.companion_bundle_id:
+            fail(
+                f"Watch App 的 WKCompanionAppBundleIdentifier = {actual_companion}，"
+                f"应等于宿主 App 的 {args.companion_bundle_id}",
+                "依附式链路声明错误，系统会在安装阶段拒绝安装。",
+            )
+        info(f"✓ WKCompanionAppBundleIdentifier 指向宿主: {actual_companion}")
+
+        wk_app = plist_read("WKApplication")
+        if wk_app.lower() != "true":
+            fail(
+                f"Watch App 缺 WKApplication=YES（实际 {wk_app}）—— "
+                f"现代 SwiftUI watch App 必需标记，缺了装上也不工作"
+            )
+        info("✓ WKApplication=YES")
+
+        if plist_read("WKWatchOnly").lower() == "true":
+            fail(
+                "Watch App 声明了 WKWatchOnly=true —— 与嵌入 iOS 宿主冲突，"
+                "不能同时成立"
+            )
+        info("✓ 未声明 WKWatchOnly（依附式正确）")
 
     # ---- 3. 安装 ----
     rc, out, err = sh(f'xcrun simctl install "{args.device}" "{app}" 2>&1', timeout=180)
@@ -226,11 +282,31 @@ def main() -> None:
 
     # ---- 6. 进程必须活着（跑一会儿再看，不是启动瞬间就判）----
     time.sleep(args.settle)
-    rc, out, _ = sh(
-        f'xcrun simctl spawn "{args.device}" launchctl list 2>/dev/null '
-        f'| grep -F "{args.bundle_id}"'
-    )
-    alive = rc == 0 and args.bundle_id in out
+    # ★ 进程名的两种形态 ★
+    # launchctl list 里的条目在不同平台/版本上形态不同：
+    #   iOS 主 App → "DayEcho"（可执行名）
+    #   Watch App → "UIKitApplication:com.dayecho.app.H98V6YZ5QL.watchkitapp[xxx]"
+    #   （UIKitApplication 前缀 + bundle id）
+    # ⇒ 两种都试，并且忽略大小写。
+    # ★ 历史踩坑：只按可执行名 grep，在 watch 上永远匹配不到，
+    #   会把"进程好好活着"误判成"秒崩"。
+    proc_names = ["DayEchoWatch", "DayEcho"] if args.target_type == "watch" else ["DayEcho"]
+    alive = False
+    for proc_name in proc_names:
+        rc, out, _ = sh(
+            f'xcrun simctl spawn "{args.device}" launchctl list 2>/dev/null '
+            f'| grep -i -F "{proc_name}"'
+        )
+        if rc == 0 and proc_name.lower() in out.lower():
+            alive = True
+            break
+    # 兜底：watch 上用完整 bundle id 再查一次
+    if not alive:
+        rc, out, _ = sh(
+            f'xcrun simctl spawn "{args.device}" launchctl list 2>/dev/null '
+            f'| grep -i -F "{args.bundle_id}"'
+        )
+        alive = rc == 0 and args.bundle_id.lower() in out.lower()
     if not alive:
         # 可能是被 launchd 杀了，也可能崩溃了 —— 两种都要如实报
         crash = collect_crash_reports(args.device, args.bundle_id)
@@ -247,16 +323,87 @@ def main() -> None:
         fail("检测到崩溃报告", crashes)
     info("✓ 无崩溃报告")
 
-    # ---- 8. extension 独立进程说明（Widget 在宿主动起来时未必被拉起）----
-    # 这不是失败，是记录：Widget 是独立进程，需要被系统按需拉起才验证得到。
-    # 真正的 Widget 启动验证需要单独触发（见文档）。
-    info("")
-    info("ℹ️  本门禁验证的是**主 App 进程**。")
-    info("ℹ️  Widget / Watch Widget 是**独立进程**，主 App 起来不代表它们能起来，")
-    info("ℹ️  需要单独触发拉起验证（历史踩过：extension 一被拉起就秒崩）。")
+    # ---- 8. Widget / extension 独立进程检查（任务 3）----
+    # ★ 为什么必须单独验 ★
+    # Widget 是**独立进程**，主 App 起来不代表它能起来。
+    # 历史踩过：extension 一被系统拉起就秒崩，主 App 一切正常，完全看不出来。
+    #
+    # 两层证据：
+    #   1) pluginkit 能列出该 extension ⇒ 系统已登记
+    #   2) 能被 simctl 拉起并给出 PID ⇒ 真的起来了
+    #      （拉不起来不算失败，但要如实记录原因并检查崩溃报告）
+    if args.extensions:
+        info("")
+        info("--- Widget / Extension 独立进程检查 ---")
+        for ext_id in args.extensions:
+            rc, out, _ = sh(
+                f'xcrun simctl spawn "{args.device}" pluginkit -m -A -D -i "{ext_id}" 2>/dev/null'
+            )
+            registered = ext_id in out and out.strip() != ""
+            if registered:
+                info(f"✓ 系统已登记 extension: {ext_id}")
+            else:
+                info(f"ℹ️  pluginkit 未列出 {ext_id}（可能未被按需拉起）")
+
+            rc2, out2, err2 = sh(
+                f'xcrun simctl launch "{args.device}" "{ext_id}" 2>&1', timeout=90
+            )
+            ext_pid = None
+            for tok in out2.replace(":", " ").split():
+                if tok.isdigit():
+                    ext_pid = tok
+                    break
+            if ext_pid:
+                info(f"✓ extension 独立进程启动成功，PID={ext_pid}  ({ext_id})")
+                time.sleep(6)
+                rc3, out3, _ = sh(
+                    f'xcrun simctl spawn "{args.device}" launchctl list 2>/dev/null '
+                    f'| grep -F "{ext_id.rsplit(".", 1)[-1]}"'
+                )
+                if rc3 == 0:
+                    info(f"✓ extension 进程存活: {ext_id}")
+                else:
+                    crash = collect_crash_reports(args.device, ext_id)
+                    fail(
+                        f"extension 拉起后进程立刻消失（秒崩）: {ext_id}",
+                        crash,
+                    )
+            else:
+                # 拉不起来本身不直接判死（系统可能按需才拉），
+                # 但必须检查是否留下了崩溃报告 —— 那才是真问题。
+                crash = collect_crash_reports(args.device, ext_id)
+                if crash.strip():
+                    fail(f"extension 拉起失败且存在崩溃报告: {ext_id}", crash)
+                info(f"ℹ️  未能直接拉起 {ext_id}（系统按需拉起，未见崩溃）")
 
     print("::notice::模拟器装机+启动门禁通过")
     print(json.dumps({"bundle_id": args.bundle_id, "pid": pid, "device": args.device}))
+
+
+def _crash_name_matches(bundle_id: str, filename: str) -> bool:
+    """崩溃文件名是否属于该 bundle。
+
+    ★ 崩溃报告用的是**可执行名**（DayEcho / DayEchoWatch / DayEchoWidget），
+    不是 bundle id（com.dayecho.app.H98V6YZ5QL）。
+    ⇒ 原实现用 bundle_id.split(".")[-1] 得到的是 Team ID "H98V6YZ5QL"，
+      永远匹配不到任何崩溃文件 ⇒ 崩溃检查形同虚设。
+    """
+    base = bundle_id.rsplit(".", 1)[-1]
+    parts = base.split(".")
+    if parts and parts[-1].isupper() and len(parts[-1]) == 10:
+        parts = parts[:-1]
+    candidates = set()
+    joined = "".join(p.capitalize() for p in parts)
+    candidates.add(joined)
+    candidates.add("DayEcho")
+    for c in list(candidates):
+        candidates.add(c.replace("App", ""))
+        candidates.add(c.replace("Watch", ""))
+    low = filename.lower()
+    for c in candidates:
+        if c and c.lower() in low:
+            return True
+    return False
 
 
 def collect_crash_reports(device: str, bundle_id: str) -> str:
@@ -284,7 +431,7 @@ def collect_crash_reports(device: str, bundle_id: str) -> str:
                 continue
             for root, _dirs, files in os.walk(cr):
                 for f in files:
-                    if bundle_id.split(".")[-1] in f:
+                    if _crash_name_matches(bundle_id, f):
                         try:
                             chunks.append(
                                 open(os.path.join(root, f), errors="replace").read()[:4000]

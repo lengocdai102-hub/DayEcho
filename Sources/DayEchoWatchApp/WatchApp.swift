@@ -592,6 +592,17 @@ struct WatchContentView: View {
 // （旧写法是 `@WKExtensionDelegateAdaptor`，WKExtensionDelegate 自 watchOS 9.2 起已弃用。）
 
 private final class DayEchoApplicationDelegate: NSObject, WKApplicationDelegate {
+    /// ★ delegate 一就绪就补调度后台刷新 ★
+    ///
+    /// `scheduleBackgroundRefresh` 在 delegate 为 nil 时会 **SIGABRT 秒崩**，
+    /// 而 SwiftUI 是在 App 主体初始化之后才注入 delegate 的。
+    /// ⇒ 启动阶段只能"挂起"，等这个回调（delegate 已就绪）再真正调度。
+    func applicationDidBecomeActive() {
+        Task { @MainActor in
+            WatchSessionCoordinator.shared.flushPendingBackgroundRefresh()
+        }
+    }
+
     func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
         // 转发给协调器统一处理
         Task { @MainActor in
@@ -612,8 +623,12 @@ struct DayEchoWatchApp: App {
         // 后台传输队列被清掉，之前排队的录音要重传。
         let coordinator = WatchSessionCoordinator.shared
         coordinator.activateSession()
-        // 调度一次即可 —— 任务触发后会由 handleBackgroundRefresh 再排下一次，
-        // 避免重复调度互相取消。
+        // ★ 这里只能"请求"调度，不能直接调度 ★
+        // 此刻 `@WKApplicationDelegateAdaptor` 还没把 delegate 注入
+        // WKApplication，直接调 `scheduleBackgroundRefresh` 会触发系统
+        // precondition 失败 → **SIGABRT 秒崩**（实测崩溃报告证实）。
+        // ⇒ 交给协调器挂起，等 delegate 就绪后由
+        //   applicationDidBecomeActive → flushPendingBackgroundRefresh() 补上。
         coordinator.scheduleBackgroundRefresh()
     }
 

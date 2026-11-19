@@ -480,10 +480,13 @@ jobs:
             exit 1
           fi
 
+          # --extensions：Widget 是独立进程，主 App 起来不代表它能起来
+          # （历史踩过：extension 一被拉起就秒崩，主 App 一切正常完全看不出来）
           python3 legal/assert_simulator_install_launch.py \
             --app "$APP" \
             --device "iPhone 16e" \
-            --bundle-id com.dayecho.app.H98V6YZ5QL
+            --bundle-id com.dayecho.app.H98V6YZ5QL \
+            --extensions com.dayecho.app.H98V6YZ5QL.widget
 
       # ---- 4b. 单独 typecheck watchOS Extension ----
       # 先单独查一遍，错误和 iOS 构建的错误分开报，定位更快。
@@ -522,6 +525,54 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             COMPILER_INDEX_STORE_ENABLE=NO \
             build
+
+      # ---- 5b. Watch App 装机 + 启动门禁（依附式链路）----
+      # ★ 为什么要单独验 Watch ★
+      # Watch App 是**依附式**的：它必须能被系统装进手表模拟器、
+      # 且 WKCompanionAppBundleIdentifier 正确指向宿主 iOS App。
+      # 历史踩坑：companion 写错时系统直接拒绝安装，
+      # 而且报错信息极其含糊，四天都没定位到。
+      #
+      # ★ runtime 不在时的处理 ★
+      # 免费 macOS runner 不一定装 watchOS runtime。
+      # 这种情况**必须显式声明"本轮未验证 Watch"**，
+      # 绝不能静默跳过 —— 静默跳过等于没设门禁。
+      - name: Assert Watch App install and launch
+        run: |
+          set -e
+
+          if ! xcrun simctl list runtimes 2>/dev/null | grep -q "watchOS"; then
+            echo "::notice title=Watch 未验证::本 runner 未安装 watchOS runtime，本轮未验证 Watch App 依附链路（不是通过）"
+            echo "WATCH_GATE=SKIPPED_NO_RUNTIME" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          WATCH_NAME="$(xcrun simctl list devices available 2>/dev/null \
+            | grep -A5 "watchOS" \
+            | grep -oE "Apple Watch Series [0-9]+ \([0-9]+mm\)" \
+            | head -1)"
+          if [ -z "$WATCH_NAME" ]; then
+            echo "::error::找不到可用的 watchOS 模拟器设备"
+            exit 1
+          fi
+          echo "使用 watch 模拟器: $WATCH_NAME"
+
+          xcrun simctl boot "$WATCH_NAME" 2>&1 || true
+          open -a Simulator
+          sleep 20
+
+          WATCH_APP="$RUNNER_TEMP/DerivedDataWatch/Build/Products/Debug-watchsimulator/DayEchoWatch.app"
+          if [ ! -d "$WATCH_APP" ]; then
+            echo "::error::watchOS 模拟器产物不存在: $WATCH_APP"
+            exit 1
+          fi
+
+          python3 legal/assert_simulator_install_launch.py \
+            --app "$WATCH_APP" \
+            --device "$WATCH_NAME" \
+            --bundle-id com.dayecho.app.H98V6YZ5QL.watchkitapp \
+            --companion-bundle-id com.dayecho.app.H98V6YZ5QL \
+            --target-type watch
 
       # ---- 6. 真机架构构建（arm64 device）----
       # 模拟器架构装不上真机、也传不上 App Store Connect。
