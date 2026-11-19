@@ -488,6 +488,26 @@ jobs:
             --bundle-id com.dayecho.app.H98V6YZ5QL \
             --extensions com.dayecho.app.H98V6YZ5QL.widget
 
+      # ---- 4b. App Group 共享容器断言（iOS 侧）----
+      # ★ 为什么单独一步 ★
+      # 「装得上、起得来」不等于「共享容器真的能用」。
+      # 真实踩坑：CODE_SIGNING_ALLOWED=NO 构建时 entitlements 不进产物
+      # ⇒ App Group 从未被系统接受 ⇒ 三个 target 各用各的沙盒
+      # ⇒ 共享功能全部静默失效，且**没有任何一行报错**。
+      - name: Assert App Group shared container (iOS)
+        run: |
+          set -e
+          IOS_APP="$RUNNER_TEMP/DerivedData/Build/Products/Debug-iphonesimulator/DayEcho.app"
+          if [ ! -d "$IOS_APP" ]; then
+            echo "::notice::iOS 模拟器产物不存在，跳过 App Group 断言（未验证，不等于通过）"
+            exit 0
+          fi
+          python3 legal/assert_app_group_shared_container.py \
+            --device "iPhone 17 Pro" \
+            --target app:"$IOS_APP" \
+            --target widget:"$IOS_APP/PlugIns/DayEchoWidget.appex"
+
+
       # ---- 4b. 单独 typecheck watchOS Extension ----
       # 先单独查一遍，错误和 iOS 构建的错误分开报，定位更快。
       #
@@ -514,6 +534,12 @@ jobs:
       # ---- 5. 编译 watchOS App（模拟器架构）----
       # 用独立的 watchOS scheme：watchOS 的 API 限制和 iOS 不同，
       # 混在 iOS 构建里出错难定位。
+      # ★ 用 ad-hoc 签名而不是 CODE_SIGNING_ALLOWED=NO ★
+      # CODE_SIGNING_ALLOWED=NO 时 **entitlements 根本不进产物**
+      # ⇒ Watch App 没有 App Group entitlement
+      # ⇒ 它和 iPhone 端是两个互不可见的沙盒，共享功能静默失效。
+      # ad-hoc 签名（CODE_SIGN_IDENTITY="-"）会把 entitlements 放进
+      # __TEXT __entitlements 段（模拟器产物靠这个生效）。
       - name: Build watchOS app (simulator)
         run: |
           xcodebuild \
@@ -522,7 +548,9 @@ jobs:
             -destination 'generic/platform=watchOS Simulator' \
             -configuration Debug \
             -derivedDataPath "$RUNNER_TEMP/DerivedDataWatch" \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=YES \
             COMPILER_INDEX_STORE_ENABLE=NO \
             build
 
@@ -582,6 +610,30 @@ jobs:
             --device "$WATCH_NAME" \
             --bundle-id com.dayecho.app.H98V6YZ5QL.watchkitapp \
             --companion-bundle-id com.dayecho.app.H98V6YZ5QL \
+
+      # ---- 5c. App Group 共享容器断言（watchOS 侧）----
+      # ★ iPhone 与 Apple Watch 在模拟器上是**两台独立设备** ★
+      # ⇒ 两边的 group 容器各自独立 ⇒ 必须分别断言。
+      - name: Assert App Group shared container (watchOS)
+        run: |
+          set -e
+          WATCH_APP="$RUNNER_TEMP/DerivedDataWatch/Build/Products/Debug-watchsimulator/DayEchoWatch.app"
+          if [ ! -d "$WATCH_APP" ]; then
+            echo "::notice::watchOS 模拟器产物不存在，跳过 App Group 断言（未验证，不等于通过）"
+            exit 0
+          fi
+          WATCH_NAME="$(xcrun simctl list devices available 2>/dev/null \
+            | grep -A5 "watchOS" \
+            | grep -oE "Apple Watch Series [0-9]+ \([0-9]+mm\)" \
+            | head -1)"
+          if [ -z "$WATCH_NAME" ]; then
+            echo "::notice::未取到 watch 设备，跳过 App Group 断言（未验证，不等于通过）"
+            exit 0
+          fi
+          python3 legal/assert_app_group_shared_container.py \
+            --device "$WATCH_NAME" \
+            --target watch:"$WATCH_APP"
+
             --target-type watch
 
       # ---- 6. 真机架构构建（arm64 device）----
