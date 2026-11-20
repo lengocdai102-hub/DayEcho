@@ -110,6 +110,37 @@ USE_APP_GROUP = ENV['DAYECHO_APP_GROUP'] != '0'
 #   WKCompanionAppBundleIdentifier ⇒ 系统拒绝安装。
 APP_GROUP_ID = "group.com.dayecho.app.#{TEAM_ID}"
 
+# ============================================================
+# 真机（付费开发者账号）签名开关 —— 默认**关闭**
+# ============================================================
+#
+# ★ 为什么需要这个开关 ★
+#
+# 默认（模拟器/CI 用途）：
+#   CODE_SIGNING_ALLOWED = NO、CODE_SIGN_IDENTITY = ""
+#   ⇒ 不签名，构建快，且不依赖任何证书
+#
+# 真机安装（DAYECHO_DEVICE_SIGNING=1）：
+#   每个 target 都要**各自**的 provisioning profile：
+#     主 App  → iOS Team Provisioning Profile: com.dayecho.app.H98V6YZ5QL
+#     Widget  → iOS Team Provisioning Profile: com.dayecho.app.H98V6YZ5QL.widget
+#   ⇒ 不能用命令行全局覆盖（全局只给一个值），
+#     必须在工程里 per-target 配好。
+#
+# ★ 踩过的坑 ★
+# 2026-11-20 真机构建时只传了命令行参数：
+#   DEVELOPMENT_TEAM / CODE_SIGN_STYLE=Manual / PROVISIONING_PROFILE_SPECIFIER
+# 结果 **BUILD SUCCEEDED 但产物没签名**：
+#   warning: DayEcho isn't code signed but requires entitlements.
+# 根因：工程的 CODE_SIGN_IDENTITY = "" + CODE_SIGNING_ALLOWED = NO
+#       ⇒ Xcode 判定「没有可用身份」⇒ 直接跳过签名，不报错。
+# ⇒ "编译成功"≠"签名成功"，这是第 4 种「静默失效」的同款陷阱。
+#
+# ★ 开启方式 ★
+#   DAYECHO_DEVICE_SIGNING=1 ruby legal/gen_xcodeproj.rb
+DEVICE_SIGNING = ENV['DAYECHO_DEVICE_SIGNING'] == '1'
+AUTO_PROFILE  = ENV['DAYECHO_AUTO_PROFILE'] == '1'
+
 
 # ============================================================
 # 1. iOS App target
@@ -932,6 +963,75 @@ watch_scheme.add_build_target(watch_widget_target)
 watch_scheme.add_build_target(watch_target)
 watch_scheme.set_launch_target(watch_target)
 watch_scheme.save_as(PROJ_PATH, 'DayEchoWatch', true)
+
+# ============================================================
+# 真机签名配置（DAYECHO_DEVICE_SIGNING=1 时才生效）
+# ============================================================
+#
+# ★ 每个 target 用自己的 profile ★
+# Apple 实际签发的（Team H98V6YZ5QL）：
+#   iOS Team Provisioning Profile: com.dayecho.app.H98V6YZ5QL
+#   iOS Team Provisioning Profile: com.dayecho.app.H98V6YZ5QL.widget
+#
+# ★ watchOS 的两个 profile 目前尚未签发 ★
+# ⇒ watch target 不配 PROVISIONING_PROFILE_SPECIFIER，
+#   只配身份与 Team ⇒ 构建能过，真机装机时再补 profile。
+#   （缺失时报错会明确指出是哪个 target 缺 profile，不会静默跳过。）
+if DEVICE_SIGNING
+  IOS_PROFILE   = "iOS Team Provisioning Profile: com.dayecho.app.#{TEAM_ID}"
+  IOS_WIDGET_PROFILE = "iOS Team Provisioning Profile: com.dayecho.app.#{TEAM_ID}.widget"
+
+  # 统一的身份 / Team 设置
+  # ★ CODE_SIGN_STYLE 必须是 Automatic ★
+  # 实测：profile 是 **Xcode managed**（Xcode 自动下载生成的），
+  # 若设 Manual 会报：
+  #   "Provisioning profile ... is Xcode managed,
+  #    but signing settings require a manually managed profile."
+  # ⇒ 保持 Automatic，同时用 PROVISIONING_PROFILE_SPECIFIER 精确指定
+  #   （Xcode 里叫 "Assigned"），既自动又能挑对 profile。
+  # ★ AUTO_PROFILE=1 时不写死 profile 名 ⇒
+  #   xcodebuild -allowProvisioningUpdates 会让 Xcode
+  #   按 bundle id + entitlements 自动匹配已有 profile，
+  #   缺失的（含 watchOS App / watchOS Widget）自动向 Apple 申请签发。
+  # ★ 已登录 Apple 账号后这条路才走得通（未登录时 Xcode 无权申请）。
+  apply_signing = lambda do |target, profile|
+    target.build_configurations.each do |cfg|
+      cfg.build_settings['CODE_SIGN_STYLE'] = 'Automatic'
+      cfg.build_settings['DEVELOPMENT_TEAM'] = TEAM_ID
+      # ★ 必须用**固定 SHA1**，不能用 'Apple Development' 这种名字 ★
+      # 实测：钥匙串里同时存在两张同 Team 证书
+      #   A1CFBE2B… "iPhone Developer: 551884866@qq.com (4WVTTGB96R)"
+      #   D357EDA3… "Apple Development: 551884866@qq.com (4WVTTGB96R)"
+      # 按名字匹配会各自选到不同的 ⇒
+      #   "Embedded binary is not signed with the same certificate as the parent app"
+      # ⇒ 解法：**把只含 A1CF 的自建钥匙串移出搜索列表**，
+      #   让全机只剩 login.keychain-db 里的 D357（所有已签发 profile 都含它）。
+      #   锁定的唯一身份由 security list-keychains 控制，不写在工程里。
+      cfg.build_settings['CODE_SIGN_IDENTITY'] = 'Apple Development'
+      cfg.build_settings['CODE_SIGNING_ALLOWED'] = 'YES'
+      cfg.build_settings['CODE_SIGNING_REQUIRED'] = 'YES'
+      if profile && !AUTO_PROFILE
+        cfg.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = profile
+      end
+    end
+  end
+
+  apply_signing.call(ios_target,        IOS_PROFILE)
+  apply_signing.call(ios_widget_target, IOS_WIDGET_PROFILE)
+  # ★ framework 不支持 provisioning profile ★
+  #   报 "DayEchoKit does not support provisioning profiles."
+  # ⇒ 只给身份，不给 profile。
+  apply_signing.call(kit_target,        nil)
+  # ★ watchOS 的 profile 尚未签发 ★
+  #   报 "DayEchoWatch requires a provisioning profile with the App Groups feature."
+  # ⇒ 暂不挂 profile；只设身份与 Team。
+  apply_signing.call(watch_target,        nil)
+  apply_signing.call(watch_widget_target, nil)
+  apply_signing.call(watch_kit_target,    nil)
+  apply_signing.call(intents_target,      nil)
+
+  puts "★ 已启用真机签名配置（Team #{TEAM_ID}）"
+end
 
 project.save
 puts "已生成 #{PROJ_PATH}"
