@@ -200,6 +200,37 @@ def check_companion(ios_app: str, watch_app: str) -> bool:
     return ok
 
 
+def reset_coresimulator(udid: str) -> None:
+    """★ 复位 CoreSimulator 服务 —— 修复「launch 永久挂死」★
+
+    实测根因（2026-11-20）：
+      CoreSimulator 服务进入坏状态后，`simctl launch/listapps/get_app_container`
+      全部永久挂死，但 `simctl spawn ... launchctl list` 仍然正常。
+      ⇒ 判别方法：连系统自带 App（com.apple.mobilesafari）都 launch 不了
+        ⇒ 是环境问题，与被测代码无关。
+
+    复位后「好窗口」只有一次：复位后第一个 launch 成功，第二个就又挂。
+    ⇒ 所以复位后必须**立刻**做要做的那一件事，不要指望连续做多个。
+    """
+    report(WARN, "coresimulator-reset", "复位 CoreSimulator 服务（launch 挂死的已知修复）")
+    subprocess.run(["pkill", "-f", "Simulator.app/Contents/MacOS/Simulator"],
+                   capture_output=True)
+    # ★ 只关目标设备，不 shutdown all ★
+    # 否则另一台设备（iOS 端）会被一起关掉，
+    # 后面「进程存活」「App Group 容器」的断言就全在测一台没开的设备 ⇒ 假失败。
+    simctl("shutdown", udid, timeout=120)
+    subprocess.run(["pkill", "-9", "-f", "CoreSimulatorService"], capture_output=True)
+    time.sleep(8)
+    simctl("boot", udid, timeout=120)
+    time.sleep(45)
+    # 复位后先确认通道确实活了，再让调用方继续
+    rc, out, _ = simctl("spawn", udid, "launchctl", "list", timeout=120)
+    if rc != 0:
+        report(FAIL, "coresimulator-reset", "复位后 launchd_sim 通道仍无响应")
+    else:
+        report(PASS, "coresimulator-reset", "复位完成，launchd_sim 通道已恢复")
+
+
 def install_and_launch(udid: str, app: str, label: str) -> bool:
     lock = device_lock(udid)
     try:
@@ -225,8 +256,27 @@ def install_and_launch(udid: str, app: str, label: str) -> bool:
                 return True
             last = f"rc={rc}: {err.strip()[:300] or out.strip()[:300]}"
             time.sleep(5)
-        report(FAIL, f"{label}-launch",
-               f"连续 3 次 launch 失败（{last}）")
+
+        # ★ 连续失败 ⇒ 大概率是 CoreSimulator 服务进入坏状态 ★
+        # 实测：这种状态下连系统自带 App 都 launch 不了 ⇒ 环境问题，不是被测代码的问题。
+        # ⇒ 复位服务后重试一轮（复位后「好窗口」只有一次，所以只重试一轮）。
+        report(WARN, f"{label}-launch", f"连续 3 次 launch 失败，尝试复位 CoreSimulator 后重试（{last}）")
+        reset_coresimulator(udid)
+        # 复位后 App 可能已被系统清掉 ⇒ 重新装一次
+        rc2, _, err2 = simctl("install", udid, app, timeout=600)
+        if rc2 != 0:
+            report(FAIL, f"{label}-launch",
+                   f"复位后 install 也失败 rc={rc2}: {err2.strip()[:200]}")
+            return False
+        for attempt in range(1, 3):
+            rc, out, err = simctl("launch", udid, bid, timeout=150)
+            if rc == 0:
+                report(PASS, f"{label}-launch",
+                       f"复位后 launch 返回 pid={out.strip()}（第 {attempt} 次尝试）")
+                return True
+            last = f"复位后 rc={rc}: {err.strip()[:300] or out.strip()[:300]}"
+            time.sleep(5)
+        report(FAIL, f"{label}-launch", f"复位后仍 launch 失败（{last}）")
         return False
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
@@ -286,6 +336,13 @@ def main() -> int:
 
     if not install_and_launch(ios_udid, args.ios_app, "ios"):
         return 1
+
+    # ★ 跑 Watch 端之前复位一次 CoreSimulator ★
+    # 实测：「好窗口」只有一次 —— 复位后第一个 launch 成功，第二个就又挂。
+    # iOS 端已经用掉了那个窗口 ⇒ 不复位的话 Watch 端几乎必挂，
+    # 而那会被误判成「Watch App 有问题」。
+    reset_coresimulator(watch_udid)
+
     if not install_and_launch(watch_udid, args.watch_app, "watch"):
         return 1
 
