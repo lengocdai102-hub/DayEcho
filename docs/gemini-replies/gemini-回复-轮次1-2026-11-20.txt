@@ -1,0 +1,708 @@
+Gemini
+发起新对话
+图片
+登录即可保存活动记录
+设置
+登录
+下载应用
+与 Gemini 对话
+你说 我是一个 Swift/SwiftUI 开发者（iOS + watchOS 配套 App，项目名 DayEcho）。 我把一个「Apple Watch 上安装失败」的问题整理如下，所有事实都来自本机实测…
+
+我是一个 Swift/SwiftUI 开发者（iOS + watchOS 配套 App，项目名 DayEcho）。
+
+我把一个「Apple Watch 上安装失败」的问题整理如下，所有事实都来自本机实测取证。
+
+请以 Apple 签名与 watchOS 分发专家的身份分析，并回答文末 5 个编号问题（Q1~Q5）。
+
+如果你认为我的诊断有误，请直接指出并给出反证依据。
+
+
+
+
+# 求助：Apple Watch 上安装失败 —— 根因分析请求
+
+
+
+
+> 提交日期：2026-11-20
+
+> 提交方：DayEcho 项目（Swift / SwiftUI，iOS + watchOS 配套 App）
+
+> 目标读者：Gemini（或任何熟悉 Apple 签名与 watchOS 分发的模型）
+
+
+
+
+---
+
+
+
+
+## 一、一句话问题陈述
+
+
+
+
+**iPhone 上主 App 安装成功、启动正常；但配套的 watchOS App 在 Apple Watch 上始终安装失败。**
+
+本项目的怀疑是：导出的 IPA 中，Watch App 使用的 provisioning profile 的 `Platform` 字段是 `iOS` 而不是 `watchOS`，
+
+而**当前开发者账号是免费个人团队（Personal Team），无法签发 watchOS 类型的 provisioning profile**。
+
+请确认这个判断是否成立，以及在免费账号下是否存在任何合法可行的绕过路径。
+
+
+
+
+---
+
+
+
+
+## 二、已确认的事实（全部有机器可验证的实证）
+
+
+
+
+### 2.1 环境
+
+
+
+
+| 项目 | 值 |
+
+|---|---|
+
+| macOS | 15.7.7（Intel Mac，16GB RAM，8 核） |
+
+| Xcode | 26.2，位于 `/Applications/Xcode.app` |
+
+| Team ID | `H98V6YZ5QL` |
+
+| Team Name | `伟 吴` |
+
+| 开发者账号类型 | **免费个人团队（Personal Team）** |
+
+| 账号（侧载签名用） | `551884866@qq.com`（2FA 走 +86 手机号） |
+
+| 实体设备 | iPhone 13 Pro Max (`iPhone14,3`) + Apple Watch Series 12 |
+
+| iOS / watchOS | iOS 26.x / watchOS 26.x |
+
+| 钥匙串中的签名身份 | **仅 1 个**：`D357EDA3F25A7FFC00CE9E58286B9702612BA237` "Apple Development: 551884866@qq.com (4WVTTGB96R)" |
+
+| Apple Distribution 证书 | **不存在**（`security find-certificate -c 'Apple Distribution'` 零命中） |
+
+
+
+
+### 2.2 IPA 包结构（`/tmp/dy_export/DayEcho.ipa`，75 个条目）
+
+
+
+
+包结构**完整且正确**，Watch App 确实被打进 iOS 包内：
+
+
+
+
+```
+
+Payload/DayEcho.app/ ← iOS 主 App
+
+Payload/DayEcho.app/PlugIns/DayEchoWidget.appex/DayEchoWatch.app/ ← ★ watchOS App（依附式）
+
+Payload/DayEcho.app/Watch/DayEchoWatch.app/PlugIns/DayEchoWatchWidget.appex/ ← watchOS Widget
+
+Payload/DayEcho.app/Watch/DayEchoWatch.app/Frameworks/DayEchoKit.framework/
+
+Payload/DayEcho.app/Frameworks/DayEchoKit.framework/
+
+```
+
+
+
+
+**四个 target 全部带有 `embedded.mobileprovision`**。
+
+
+
+
+### 2.3 ★ 四个 provisioning profile 的实测属性（关键证据）
+
+
+
+
+本机 `~/Library/Developer/Xcode/UserData/Provisioning Profiles/` 下共 4 个 profile，与 IPA 内嵌的四个一一对应：
+
+
+
+
+| Target | Profile Name | **Platform** | app-id | TTL | 过期时间 |
+
+|---|---|---|---|---|---|
+
+| iOS App | `iOS Team Provisioning Profile: com.dayecho.app.H98V6YZ5QL` | **`iOS`** | `H98V6YZ5QL.com.dayecho.app.H98V6YZ5QL` | 7 | 2026-11-27 |
+
+| iOS Widget | `iOS Team Provisioning Profile: com.dayecho.app.H98V6YZ5QL.widget` | **`iOS`** | `H98V6YZ5QL.com.dayecho.app.H98V6YZ5QL.widget` | 7 | 2026-11-27 |
+
+| Watch App | `iOS Team Provisioning Profile: com.dayecho.app.H98V6YZ5QL.watchkitapp` | **`iOS`** | `H98V6YZ5QL.com.dayecho.app.H98V6YZ5QL.watchkitapp` | 7 | 2026-11-27 |
+
+| Watch Widget | `iOS Team Provisioning Profile: com.dayecho.app.H98V6YZ5QL.watchkitapp.widget` | **`iOS`** | `H98V6YZ5QL.com.dayecho.app.H98V6YZ5QL.watchkitapp.widget` | 7 | 2026-11-27 |
+
+
+
+
+**★ 观察：两个 watchkitapp 的 profile，Platform 也是 `iOS`；本机不存在任何 Platform=watchOS 的 profile（数量 = 0）。**
+
+`TimeToLive = 7` 天 + Profile 名称为 "iOS Team Provisioning Profile" 是免费个人团队的典型特征。
+
+
+
+
+四个 profile 的 `Entitlements` 均含：
+
+
+
+
+```xml
+
+<key>application-identifier</key> ayecho.app.H98V6YZ5QL[.watchkitapp[.widget]]</string>
+
+<key>com.apple.developer.team-identifier</key> <string>H98V6YZ5QL</string>
+
+<key>com.apple.security.application-groups</key> <array><string>group.com.dayecho.app.H98V6YZ5QL</string></array>
+
+<key>get-task-allow</key> <true/>
+
+```
+
+
+
+
+每个 profile 的 `ProvisionedDevices` 均为空数组（Xcode 托管的 development profile 常见形态）。
+
+
+
+
+### 2.4 Watch App 的代码签名自洽性（已核验，无问题）
+
+
+
+
+```
+
+$ codesign -d --entitlements - --requirements - Payload/DayEcho.app/Watch/DayEchoWatch.app
+
+designated => identifier "com.dayecho.app.H98V6YZ5QL.watchkitapp"
+
+and anchor apple generic
+
+and certificate leaf[subject.CN] = "Apple Development: 551884866@qq.com (4WVTTGB96R)"
+
+entitlements:
+
+application-identifier = H98V6YZ5QL.com.dayecho.app.H98V6YZ5QL.watchkitapp
+
+com.apple.developer.team-identifier = H98V6YZ5QL
+
+com.apple.security.application-groups = [group.com.dayecho.app.H98V6YZ5QL]
+
+get-task-allow = true
+
+```
+
+
+
+
+Info.plist 的依附式三不变量全部正确：
+
+
+
+
+| 键 | 值 | 判定 |
+
+|---|---|---|
+
+| `WKCompanionAppBundleIdentifier` | `com.dayecho.app.H98V6YZ5QL` | ✅ 指向宿主 iOS App |
+
+| `WKApplication` | `true` | ✅ 现代单 target 布局 |
+
+| `WKWatchOnly` | 不存在 | ✅ 依附式（不是独立 Watch App） |
+
+
+
+
+`CFBundleDisplayName` = `DayEcho`。
+
+
+
+
+### 2.5 传输链与配对状态（已排除）
+
+
+
+
+- iPhone 与 Apple Watch **同一 Apple 账号**，已通过 BLE 与 Cloud 完成配对（`WCSession` 激活成功）
+
+- 蓝牙开启，RSSI 约 `-49`
+
+- iPhone 侧 `devicectl` 安装 IPA 返回 `INSTALL_RC=0`，**主 App 在 iPhone 上启动成功并持续存活（PID 9734）**
+
+- 失败的只有 **Watch 端安装**这一步
+
+
+
+
+### 2.6 已排除的其他可能原因
+
+
+
+
+| 假| ✗ 已排除 —— `Payload/DayEcho.app/Watch/DayEchoWatch.app` 存在且结构完整 |
+
+| `WKCompanionAppBundleIdentifier` 配错 | ✗ 已排除 —— 值正确，且不是 App Group 值 |
+
+| 用了旧版 watch2_app/watchkit2-extension 布局 | ✗ 已排除 —— `WKApplication=true`，无 `_WatchKitStub` |
+
+| 证书链不统一（父 App 与内嵌 App 用不同证书） | ✗ 已排除 —— 四个 target 统一为 D357EDA3 同一张证书 |
+
+| 蓝牙 / 配对 / 账号不一致 | ✗ 已排除 —— 见 2.5 |
+
+| entitlements 与 profile 不一致 | ✗ 已排除 —— app-group、app-id 全部一致 |
+
+
+
+
+### 2.7 报错现象
+
+
+
+
+Apple Watch 上安装时失败，宿主侧日志中出现：
+
+
+
+
+```
+
+MIInstallerErrorDomain Code=111
+
+```
+
+
+
+
+**已知**：这是「profile 不支持该平台 / 缺少对应平台能力」的典型错误码。
+
+
+
+
+---
+
+
+
+
+## 三、本项目的工程配置现状
+
+
+
+
+工程由 `legal/gen_xcodeproj.rb` 生成（Xcodeproj gem），真机签名走 `DAYECHO_DEVICE_SIGNING=1` 开关。
+
+
+
+
+签名配置代码（`legal/gen_xcodeproj.rb` 第 968–1030 行附近）：
+
+
+
+
+```ruby
+
+if DEVICE_SIGNING
+
+IOS_PROFILE = "iOS Team Provisioning Profile: com.dayecho.app.#{TEAM_ID}"
+
+IOS_WIDGET_PROFILE = "iOS Team Provisioning Profile: com.dayecho.app.#{TEAM_ID}.widget"
+
+
+
+
+apply_signing = lambda do |target, profile|
+
+target.build_configurations.each do |cfg|
+
+cfg.build_settings['CODE_SIGN_STYLE'] = 'Automatic'
+
+cfg.build_settings['DEVELOPMENT_TEAM'] = TEAM_ID
+
+cfg.build_settings['CODE_SIGN_IDENTITY'] = 'Apple Development'
+
+cfg.build_settings['CODE_SIGNING_ALLOWED'] = 'YES'
+
+cfg.build_settings['CODE_SIGNING_REQUIRED'] = 'YES'
+
+if profile && !AUTO_PROFILE
+
+cfg.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = profile
+
+end
+
+end
+
+end
+
+
+
+
+apply_signing.call(ios_target, IOS_PROt, IOS_WIDGET_PROFILE)
+
+apply_signing.call(kit_target, nil) # framework 不支持 profile
+
+# ★ watchOS 的 profile 尚未签发 ★
+
+apply_signing.call(watch_target, nil)
+
+apply_signing.call(watch_widget_target, nil)
+
+apply_signing.call(watch_kit_target, nil)
+
+apply_signing.call(intents_target, nil)
+
+end
+
+```
+
+
+
+
+工程注释里已明确写着：
+
+
+
+
+```
+
+# ★ watchOS 的两个 profile 目前尚未签发 ★
+
+# ⇒ watch target 不配 PROVISIONING_PROFILE_SPECIFIER，
+
+# 只配身份与 Team ⇒ 构建能过，真机装机时再补 profile。
+
+```
+
+
+
+
+watchOS target 的平台设置：
+
+
+
+
+```ruby
+
+s['TARGETED_DEVICE_FAMILY'] = '4'
+
+s['SUPPORTED_PLATFORMS'] = 'watchos watchsimulator'
+
+s['SDKROOT'] = 'auto' # 现代 watch App 必须用 auto
+
+```
+
+
+
+
+App Group（跨端共享账本）：
+
+```
+
+group.com.dayecho.app.H98V6YZ5QL
+
+```
+
+
+
+
+---
+
+
+
+
+## 四、★ 请回答的问题
+
+
+
+
+### Q1（最关键）诊断是否成立？
+
+> Watch App 的 profile 的 `Platform=iOS`（而非 watchOS），且本机不存在任何 watchOS profile，
+
+> 这是否就是 `MIInstallerErrorDomain Code=111` 的**直接且充分**的原因？
+
+> 还是说 Code=111 另有其他常见成因？
+
+
+
+
+### Q2 免费个人团队的硬限制
+
+> **免费个人团队（Personal Team）是否根本不可能签发 watchOS 类型的 provisioning profile？**
+
+> 我理解个人团队的已知限制包括：profile 有效期 7 天、**没有 Apple Distribution 证书**、
+
+> 设备数上限、App ID 数量上限、**无法创建 App Groups**。
+
+> 请确认：**「无法创建/使用 App Groups」** 这一条对个人团队是否属实？
+
+> 如果属实，那么我们这个 App 因为要跨端共享账本而用了 App Group，
+
+> 在免费账号下**从架构上就不可能**在 Watch 上部署 —— 对吗？
+
+
+
+
+### Q3 是否有合法的免费绕过路径
+
+> 在**不购买付费开发者账号**、**不使用第三方侧载工具**（SideLoadly / iLoader / trollstore 等）、
+
+> 且**必须走 Xcode 官方签名通道**的前提下，是否存在任何路径让 watchOS App 装上实体 Apple Watch？
+
+> 具体想问：
+
+> - 如果在 Xcode 里手动登录同一个免费账号，让 Xcode 自动为 wat拟器**部署能否作为替代交付路径（我们已验证模拟器门禁全绿）？
+
+> - 如果 App Group 是硬阻塞，能否通过**其他共享机制**（如 `WCSession` 传全部数据、
+
+> `NSUserDefaults(suiteName:)`、或干脆不做跨端共享）让 watchOS App 在免费账号下可部署？
+
+
+
+
+### Q4 如果必须付费
+
+> 付费账号到位后，为了让 iOS App + iOS Widget + Watch App + Watch Widget 全部装上，
+
+> 需要在 Apple Developer 后台创建哪些标识（App ID / App Group）？
+
+> 依赖顺序是什么（先建 App Group 再建 App ID？还是反之）？
+
+> 需要重新 Archive/Export 吗，还是改完 profile 直接重签即可？
+
+
+
+
+### Q5 工程实现层面
+
+> 我们工程用 Xcodeproj gem 生成 `.xcodeproj`（而非手写 project.pbxproj）。
+
+> `watch_target` 与 `watch_widget_target` 目前不设 `PROVISIONING_PROFILE_SPECIFIER`（因为没有 watchOS profile 可指）。
+
+> 在付费账号可用后，需要怎么改才能让 watch target 正确挂上 watchOS profile？
+
+> 需要注意 `watch_kit_target`（watchOS 版 framework）与 `intents_target`（AppIntents extension）是否也需要独立 profile？
+
+> 它们的 bundle id 分别是 `com.dayecho.kit.watch.H98V6YZ5QL` 与 `com.dayecho.app.H98V6YZ5QL.intents`（请确认是否合理）。
+
+
+
+
+---
+
+
+
+
+## 五、附加信息（供参考，可能用得上）
+
+
+
+
+- **模拟器侧全部通过**：watchOS 26.2 模拟器上，Watch App 与 Watch Widget 均可安装、启动、持续存活；
+
+App Group 容器 `group.com.dayecho.app.H98V6YZ5QL` 在 watchOS 侧独立存在；
+
+两端 entitlements 一致。跨端门禁脚本 `legal/assert_watch_connectivity_roundtrip.py` 一次跑出 14 passed / 0 fail。
+
+- **App Group 在模拟器上可用** ⇒ 说明 entitlements 本身没问题，问题纯粹在**真机 profile 的平台/账号类型**。
+
+- WatchConnectivity 的 ACK 回传链路目前**尚未接线**（手机端未回发 ACK，Watch 端未实现 `didReceiveUserInfo`），
+
+这是独立的业务缺口，与本次安装问题无关，但会影响真机联调时的现象解读。
+
+
+
+
+---
+
+
+
+
+## 六、附：本项目的已知取舍
+
+
+
+
+我们**不接受**第三方侧载工具（SideLoadly / iLoader 等）作为交付路径，理由是合规性与可持续性；
+
+我们**接受**「在付费账号不可得期间，用 watchOS 模拟器锁死功能、实体机环节明确标注为未验证」的交付形态。
+
+
+
+
+请重点回答 **Q1 / Q2 / Q3**，这三问决定了我们是App Group）。
+
+否需要立即购买开发者账号，
+
+以及是否需要为免费账号做架构降级（如放弃 chOS target 申请 profile，会得到什么？
+
+> - 免费账号下的 watchOS **模FILE)
+
+apply_signing.call(ios_widget_targe说 | 排除依据 |
+
+|---|---|
+
+| Watch App 没打进 IPA <string>H98V6YZ5QL.com.d ← iOS Widget
+
+Payload/DayEcho.app/Watch/
+
+Gemini 说
+
+先给出核心结论：你的怀疑中「免费个人团队受限导致无法正常在实体 Watch 上部署」的大方向有参考价值，但「因为 Profile 的 Platform 是 iOS 而非 watchOS、且免费账号无法签发 watchOS profile」这一核心归因存在前提误判。   
+Open Source Alternatives
+
+一、诊断纠偏与反证依据
+1. 为什么不能把 Platform = iOS 当作根因？
+
+Apple 机制本身就是 iOS 开发 Profile 覆盖 watchOS：在 Apple 开发者体系中，开发类 Provisioning Profile 本身就是 iOS App Development 类型，官方说明明确涵盖 iOS 和 watchOS 应用。本机出现 Platform = iOS 是常态，不是异常。
+
+反证就在你自己的实测数据里：2.3 节已经证明，Xcode 已经为 com.dayecho.app.H98V6YZ5QL.watchkitapp 和 .watchkitapp.widget 生成了对应的 Profile（TimeToLive = 7），甚至里面还包含了 <key>com.apple.security.application-groups</key>。这说明「个人团队完全无法为 watchkitapp 生成 profile」的说法与实测矛盾。
+
+2. 实测取证中值得警惕的其他线索
+
+ProvisionedDevices 为空数组：你在 2.3 节提到每个 Profile 的 ProvisionedDevices 均为空数组。真机安装时，设备 UDID 是否被正确纳入/同步到 Watch 侧的 Profile 校验链，是真机签名安装失败的高频排查点（哪怕 iPhone 侧 devicectl 返回 0，Watch 侧仍可能因设备未列入 Profile、Watch 端 Profile 未同步或 Capability/Entitlements 校验未通过而拒绝安装）。
+
+MIInstallerErrorDomain Code=111 的成因：在 MobileInstallation 链路中，Code=111 并不局限于「平台字段不匹配」单一原因，它通常与签名/Entitlements/Profile 校验失败或安装状态/设备授权不满足有关。仅凭 Platform = iOS 无法构成「充分且唯一」的因果证明。   
+CSDN
+
+IPA 目录结构细节（2.2 节）：你的结构树里出现了 Payload/DayEcho.app/PlugIns/DayEchoWidget.appex/DayEchoWatch.app/ 这一行（紧挨着 Payload/DayEcho.app/Watch/DayEchoWatch.app/）。虽然你 2.6 节已排除 Watch App 缺失，但建议核对实际 zip 归档中是否真的把 DayEchoWatch.app 误放进了 PlugIns/...appex/ 下——依附式 Watch App 应位于 Payload/DayEcho.app/Watch/DayEchoWatch.app（现代单 Target 布局）。
+
+二、逐题回答（Q1 ~ Q5）
+Q1：诊断是否成立？MIInstallerErrorDomain Code=111 还有哪些常见成因？
+
+诊断不完全成立：Platform = iOS 不是错误，且 Watch 的两个 Bundle ID 已有 7 天 Profile。不能把「Platform 不是 watchOS」作为 Code=111 的直接充分原因。   
+Open Source Alternatives
+
+Code=111 的其他常见成因：
+
+设备未在 Profile 的 ProvisionedDevices 中（尤其是 Watch 独立 UDID 未注册/未同步到 Profile）。   
+CSDN
+
+Entitlements 与 Profile 能力不匹配（例如 App Group、Keychain Sharing、Associated Domains 等在 Profile 中未授权或格式不符；虽然你看到 Profile 里有 application-groups，但仍需核对 Watch 端实际签名嵌入的 .mobileprovision 与 codesign -d --entitlements :- 是否完全一致）。
+
+Watch 端配对同步/签名信任状态异常（iPhone 安装成功不代表 Watch 端 Profile/签名校验已通过，AppConduit 传输或 Watch 侧 MobileInstallation 校验失败也会触发安装中断）。
+
+Q2：免费个人团队的硬限制与「App Group 架构不可行」是否属实？
+
+免费个人团队的典型限制：
+
+Provisioning Profile 有效期 7 天，到期需重新签名安装。   
+Open Source Alternatives
+
+无 Apple Distribution 证书（无法打 Ad Hoc / TestFlight / App Store 包）。
+
+设备数量、App ID 数量及同时安装的免费签名 App 数量均有限制。
+
+关于「无法创建/使用 App Groups」：
+
+在 Apple Developer 后台，免费账号通常无法像付费账号那样在网页端完整管理 Capabilities/App Groups 资源；但在本地 Xcode 自动签名下，有时本地生成的临时 Profile 会写入 application-groups（正如你 2.3 节实测所见）。
+
+但要注意：即使本地 Profile 里出现了 application-groups 字段，免费账号对受限 Capability/跨端共享的支持在真机安装与签名校验上依然存在不确定性/限制（付费 Apple Developer Program 才是官方完整支持 App Groups、CloudKit、后台能力及真机分发的前提）。
+
+因此，如果 DayEcho 强依赖 App Group 做跨端账本共享，在免费个人团队下将其作为「可稳定落地的真机方案」风险极高、不可依赖；将其定性为「免费账号下真机路径受阻/不建议作为主力交付方案」是符合工程实际的。
+
+Q3：不付费、不用第三方侧载、只走 Xcode 官方签名，是否有合法绕过路径？
+
+直接走 Xcode 官方签名把 Watch App 装上实体 Apple Watch：没有可靠且合规的绕过路径。在官方签名体系下，真机安装必须满足证书、Profile、设备 UDID 与 Capability 校验，无法靠改字段或绕过签名校验强行装上实体表。
+
+Xcode 登录同一免费账号，用 watchOS 模拟器能否作为替代交付路径？
+
+可以作为「开发与功能验证/冻结基线」的替代交付形态（契合你第六节的取舍：模拟器门禁通过、实体机标为「未验证」）。
+
+但要明确边界：模拟器不走真机 MobileInstallation 与真机 Profile 校验，也无法真实验证 BLE/Cloud 弱网、真机 WatchConnectivity 唤醒与后台调度、真机续航与性能。因此它只能证明「代码与共享逻辑在模拟环境跑通」，不能等同于「真机已交付」。
+
+如果不用 App Group，改用其他共享机制能绕过免费账号限制吗？
+
+不能绕过签名与真机部署限制本身。即使你把共享方式从 App Group 改成 WCSession 传数据或干脆不做跨端共享，只要 Watch App 仍要装上实体 Apple Watch，依然受限于免费账号的签名/Profile/设备限制与真机安装链路。
+
+不过从工程解耦角度看：把「账本同步协议」抽象成独立接口（当前本地模拟/内存或 WCSession 实现，未来接 App Group / CloudKit），确实能让你的模拟器验证与后续付费真机联调互不阻塞。
+
+Q4：付费账号到位后，后台创建顺序与是否需要重新 Archive/Export？
+
+Apple Developer 后台创建清单：
+
+App Group：创建 group.com.dayecho.app.H98V6YZ5QL（注意 iOS 与 watchOS 在同一 Team 下通常共用同一 App Group 标识符）。
+
+显式 App ID（4 个核心 Target + 视情况的扩展/Framework）：
+
+iOS 主 App：com.dayecho.app.H98V6YZ5QL
+
+iOS Widget：com.dayecho.app.H98V6YZ5QL.widget
+
+Watch App：com.dayecho.app.H98V6YZ5QL.watchkitapp
+
+Watch Widget：com.dayecho.app.H98V6YZ5QL.watchkitapp.widget
+
+（若 intents_target 独立分发，也需对应显式 App ID：com.dayecho.app.H98V6YZ5QL.intents）
+
+并在各 App ID 上勾选 App Groups，关联 group.com.dayecho.app.H98V6YZ5QL。
+
+依赖顺序：
+
+先创建 App Group，再创建/配置 App ID（先有 Group 标识符，在配置 App ID 的 App Groups Capability 时才能直接勾选关联；即便先建了 App ID，也必须回填关联 App Group 后再生成/刷新 Profile）。   
+Apple Developer
+
+是否需要重新 Archive / Export？
+
+需要重新 Archive 并 Export。不能只改完 Profile 就在旧 IPA 上简单重签完事，因为新的 Provisioning Profile 包含了更新后的 Capability/Entitlements 授权信息，必须重新编译打包并嵌入新的 .mobileprovision，才能保证签名、Entitlements 与 Profile 三者严格一致。
+
+Q5：Xcodeproj 生成工程（gen_xcodeproj.rb）该如何调整？watch_kit_target 与 intents_target 怎么办？
+
+watch_target 与 watch_widget_target 挂上 Profile：
+
+付费账号下创建好对应的 Development / Distribution Profile 后，在 gen_xcodeproj.rb 中为 watch_target 和 watch_widget_target 填入对应的 PROVISIONING_PROFILE_SPECIFIER（或在使用付费 Team 且 Xcode 自动管理时，确保 CODE_SIGN_STYLE = 'Automatic'、正确的 DEVELOPMENT_TEAM 与匹配的 Profile 名称一致；注意你贴出的代码片段里 apply_signing.call(ios_target, IOS_PROt, IOS_WIDGET_PROFILE) 还有拼写笔误，生成脚本时需一并修正）。
+
+watch_kit_target（watchOS Framework）是否需要独立 Profile？
+
+不需要独立 embedded.mobileprovision。Framework 本身不支持独立 Provisioning Profile，它由宿主 DayEchoWatch.app 在打包时嵌入并随宿主一起签名（使用相同的 DEVELOPMENT_TEAM 和 CODE_SIGN_IDENTITY）。
+
+intents_target（AppIntents Extension）是否需要独立 Profile 与 Bundle ID 命名合理性：
+
+如果 intents_target 是一个独立的 .appex扩展目标并参与真机签名打包，它需要独立的显式 App ID 和对应的 Provisioning Profile（不能用通配符应付带 Capability 的扩展）。
+
+命名 com.dayecho.app.H98V6YZ5QL.intents（以及 com.dayecho.kit.watch.H98V6YZ5QL）：结构上是合法的反向域名格式，且在 watchOS 体系中 Watch App 的 Bundle ID 通常以宿主 App Bundle ID 为前缀（如 ...watchkitapp / ...watchkitapp.widget）。建议保持与现有 com.dayecho.app.H98V6YZ5QL.* 命名风格统一，避免出现多套前缀导致后台注册和 Capability 关联混乱。
+
+三、当前最务实的决策建议
+
+短期（未付费前）：保留 watchOS 模拟器门禁作为当前交付基线，明确标注「实体 Apple Watch 真机安装未验证」，避免在免费账号上反复折腾真机绕过。
+
+中期（决定真机联调/上架时）：购买付费 Apple Developer Program，按「先建 App Group → 建各显式 App ID 并绑定 Group → 生成 Profile → gen_xcodeproj.rb 配齐签名 → 重新 Archive/Export」的顺序走通真机链路，再顺带补齐 WCSession 的 ACK 与 didReceiveUserInfo 业务闭环。
+
+如果你想继续推进排查或工程改造，下一步你想看哪一部分？
+检查 IPA 归档路径
+梳理 gen_xcodeproj 签名逻辑
+补充 WCSession 联调细节
+登录即可关联到 Google 应用、制作图片等等
+登录
+
+
+
+
+自动
+
+Gemini 是一款 AI 工具，其回答未必正确无误。
+
+关于 Gemini
+订阅
+企业版
+登录
+正在搜索网络
